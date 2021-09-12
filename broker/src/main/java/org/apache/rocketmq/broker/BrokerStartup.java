@@ -48,6 +48,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.rocketmq.remoting.netty.TlsSystemConfig.TLS_ENABLE;
 
+/**
+ * 1.Environment variables添加参数ROCKETMQ_HOME
+ * 2.添加启动参数
+ *      NameServer关联:    -n localhost:9876
+ *      Broker的配置文件:   -c /Users/admin/IDEA-MySpace/rocketmq/conf/broker.conf
+ */
 public class BrokerStartup {
     public static Properties properties = null;
     public static CommandLine commandLine = null;

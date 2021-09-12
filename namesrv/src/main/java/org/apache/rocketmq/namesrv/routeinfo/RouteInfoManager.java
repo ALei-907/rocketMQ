@@ -33,6 +33,7 @@ import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.TopicConfig;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.constant.PermName;
+import org.apache.rocketmq.common.namesrv.NamesrvConfig;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.common.namesrv.RegisterBrokerResult;
@@ -43,7 +44,9 @@ import org.apache.rocketmq.common.protocol.route.BrokerData;
 import org.apache.rocketmq.common.protocol.route.QueueData;
 import org.apache.rocketmq.common.protocol.route.TopicRouteData;
 import org.apache.rocketmq.common.sysflag.TopicSysFlag;
+import org.apache.rocketmq.namesrv.NamesrvController;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
+import org.apache.rocketmq.remoting.netty.NettyServerConfig;
 
 public class RouteInfoManager {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
@@ -56,10 +59,19 @@ public class RouteInfoManager {
     private final HashMap<String/* brokerAddr */, List<String>/* Filter Server */> filterServerTable;
 
     public RouteInfoManager() {
+        /**
+         * 以下属性使用了读写锁的方式进行属性操作
+         * 保证了并发写的可靠性和并发读的可用性
+         */
+        // 消息队列路由信息：消息发送时根据路由表进行负载均衡->set<BrokerName>
         this.topicQueueTable = new HashMap<String, List<QueueData>>(1024);
+        // Broker基础信息：包含BrokerName，所属集群名称，主备Broker地址-><BrokerName,addrs>:一个Broker可能存在主备关系
         this.brokerAddrTable = new HashMap<String, BrokerData>(128);
+        // Broker集群信息：存储集群中所有Broker名称->set<BrokerName>
         this.clusterAddrTable = new HashMap<String, Set<String>>(32);
+        // Broker状态信息：NameServer每次收到心跳包就会更新这里的信息->List<BrokerName>
         this.brokerLiveTable = new HashMap<String, BrokerLiveInfo>(256);
+        // Broker上的FilterServer列表：用于类模式消息过滤
         this.filterServerTable = new HashMap<String, List<String>>(256);
     }
 
@@ -99,6 +111,24 @@ public class RouteInfoManager {
         return topicList.encode();
     }
 
+    /**
+     * 功能描述：更新RouteInfoManager内的属性
+     *         更新过程使用道了读写锁（写独占，读共享）
+     * {@link RouteInfoManager#clusterAddrTable} 集群信息
+     * {@link RouteInfoManager#brokerAddrTable}  Broker信息
+     * {@link RouteInfoManager#topicQueueTable}  如果需要会进行更新Topic信息
+     * {@link RouteInfoManager#brokerLiveTable}  存活Broker信息表
+     * {@link RouteInfoManager#filterServerTable}Broker的Filter过滤服务器地址信息
+     * @param clusterName
+     * @param brokerAddr
+     * @param brokerName
+     * @param brokerId
+     * @param haServerAddr
+     * @param topicConfigWrapper
+     * @param filterServerList
+     * @param channel
+     * @return
+     */
     public RegisterBrokerResult registerBroker(
         final String clusterName,
         final String brokerAddr,
@@ -112,7 +142,7 @@ public class RouteInfoManager {
         try {
             try {
                 this.lock.writeLock().lockInterruptibly();
-
+                // 1.获取cluster集群信息，如果不存在就进行创建,然后将Broker名加入到Broker集合中
                 Set<String> brokerNames = this.clusterAddrTable.get(clusterName);
                 if (null == brokerNames) {
                     brokerNames = new HashSet<String>();
@@ -121,7 +151,7 @@ public class RouteInfoManager {
                 brokerNames.add(brokerName);
 
                 boolean registerFirst = false;
-
+                // 2.维护BrokerData的数据
                 BrokerData brokerData = this.brokerAddrTable.get(brokerName);
                 if (null == brokerData) {
                     registerFirst = true;
@@ -142,6 +172,8 @@ public class RouteInfoManager {
                 String oldAddr = brokerData.getBrokerAddrs().put(brokerId, brokerAddr);
                 registerFirst = registerFirst || (null == oldAddr);
 
+                // 如果Broker为Master，并且Broker Topic配置信息发生变化或者是初次注册
+                // 则需要创建或更新topic信息
                 if (null != topicConfigWrapper
                     && MixAll.MASTER_ID == brokerId) {
                     if (this.isBrokerTopicConfigChanged(brokerAddr, topicConfigWrapper.getDataVersion())
@@ -150,12 +182,13 @@ public class RouteInfoManager {
                             topicConfigWrapper.getTopicConfigTable();
                         if (tcTable != null) {
                             for (Map.Entry<String, TopicConfig> entry : tcTable.entrySet()) {
+                                // 创建或者更新Topic信息
                                 this.createAndUpdateQueueData(brokerName, entry.getValue());
                             }
                         }
                     }
                 }
-
+                // 3.更新BrokerLiveInfo，存活Broker信息表（这是执行路由删除的重要依据）
                 BrokerLiveInfo prevBrokerLiveInfo = this.brokerLiveTable.put(brokerAddr,
                     new BrokerLiveInfo(
                         System.currentTimeMillis(),
@@ -165,7 +198,8 @@ public class RouteInfoManager {
                 if (null == prevBrokerLiveInfo) {
                     log.info("new broker registered, {} HAServer: {}", brokerAddr, haServerAddr);
                 }
-
+                // 4.注册Broker的过滤器Server地址列表，一个Broker会关联多个FilterServer消息过滤服务器
+                //   如果此Broker为从节点，则需要查找该Broker的master的节点信息，并更新对应的masterAddr属性
                 if (filterServerList != null) {
                     if (filterServerList.isEmpty()) {
                         this.filterServerTable.remove(brokerAddr);
@@ -214,6 +248,11 @@ public class RouteInfoManager {
         }
     }
 
+    /**
+     * 功能描述：更新topicQueueTable
+     * @param brokerName Broker名称
+     * @param topicConfig topicConfig配置信息
+     */
     private void createAndUpdateQueueData(final String brokerName, final TopicConfig topicConfig) {
         QueueData queueData = new QueueData();
         queueData.setBrokerName(brokerName);
@@ -222,13 +261,16 @@ public class RouteInfoManager {
         queueData.setPerm(topicConfig.getPerm());
         queueData.setTopicSysFlag(topicConfig.getTopicSysFlag());
 
+        // 获取Topic配置参数
         List<QueueData> queueDataList = this.topicQueueTable.get(topicConfig.getTopicName());
+        // 1.如果为空，就新赋值
         if (null == queueDataList) {
             queueDataList = new LinkedList<QueueData>();
             queueDataList.add(queueData);
             this.topicQueueTable.put(topicConfig.getTopicName(), queueDataList);
             log.info("new topic registered, {} {}", topicConfig.getTopicName(), queueData);
         } else {
+            // 2.判断是否需要加入Topic设置
             boolean addNewOne = true;
 
             Iterator<QueueData> it = queueDataList.iterator();
@@ -426,20 +468,33 @@ public class RouteInfoManager {
         return null;
     }
 
+    /**
+     * 功能描述：移除超时120s没发送心跳包的broker
+     *
+     * NameServer在初始化的时候作为定时任务写入 {@link NamesrvController#initialize()}
+     * 更新RouteInfoManager几个主要属性的值{@link RouteInfoManager#onChannelDestroy(java.lang.String, io.netty.channel.Channel)}
+     */
     public void scanNotActiveBroker() {
         Iterator<Entry<String, BrokerLiveInfo>> it = this.brokerLiveTable.entrySet().iterator();
         while (it.hasNext()) {
             Entry<String, BrokerLiveInfo> next = it.next();
             long last = next.getValue().getLastUpdateTimestamp();
             if ((last + BROKER_CHANNEL_EXPIRED_TIME) < System.currentTimeMillis()) {
+                // 1.关闭Channel
                 RemotingUtil.closeChannel(next.getValue().getChannel());
                 it.remove();
                 log.warn("The broker channel expired, {} {}ms", next.getKey(), BROKER_CHANNEL_EXPIRED_TIME);
+                // 2.移除与该Broker相关的路由信息
                 this.onChannelDestroy(next.getKey(), next.getValue().getChannel());
             }
         }
     }
 
+    /**
+     * 功能描述：更新RouteInfoManager属性值
+     * @param remoteAddr
+     * @param channel
+     */
     public void onChannelDestroy(String remoteAddr, Channel channel) {
         String brokerAddrFound = null;
         if (channel != null) {
@@ -473,16 +528,18 @@ public class RouteInfoManager {
 
             try {
                 try {
+                    // 1.申请写锁，根据BrokerAddress从BrokerLiveTable，filterServerTable移除
                     this.lock.writeLock().lockInterruptibly();
                     this.brokerLiveTable.remove(brokerAddrFound);
                     this.filterServerTable.remove(brokerAddrFound);
+                    // 2.维护brokerAddrTable
                     String brokerNameFound = null;
                     boolean removeBrokerName = false;
                     Iterator<Entry<String, BrokerData>> itBrokerAddrTable =
                         this.brokerAddrTable.entrySet().iterator();
                     while (itBrokerAddrTable.hasNext() && (null == brokerNameFound)) {
                         BrokerData brokerData = itBrokerAddrTable.next().getValue();
-
+                        // 维护brokerData，本质上是移除对应的Broker地址
                         Iterator<Entry<Long, String>> it = brokerData.getBrokerAddrs().entrySet().iterator();
                         while (it.hasNext()) {
                             Entry<Long, String> entry = it.next();
@@ -504,7 +561,8 @@ public class RouteInfoManager {
                                 brokerData.getBrokerName());
                         }
                     }
-
+                    // 3.根据BrokerName，从clusterAddrTable中找到Broker并从集群中移除
+                    //  如果移除后，Cluster中不包含Broker，则将该CLuster从CLusterAddTable中移除
                     if (brokerNameFound != null && removeBrokerName) {
                         Iterator<Entry<String, Set<String>>> it = this.clusterAddrTable.entrySet().iterator();
                         while (it.hasNext()) {
@@ -526,7 +584,7 @@ public class RouteInfoManager {
                             }
                         }
                     }
-
+                    // 4.topicQueueTable的维护
                     if (removeBrokerName) {
                         Iterator<Entry<String, List<QueueData>>> itTopicQueueTable =
                             this.topicQueueTable.entrySet().iterator();
@@ -553,6 +611,7 @@ public class RouteInfoManager {
                         }
                     }
                 } finally {
+                    // 5.释放锁
                     this.lock.writeLock().unlock();
                 }
             } catch (Exception e) {

@@ -41,6 +41,9 @@ import org.apache.rocketmq.srvutil.ServerUtil;
 import org.apache.rocketmq.srvutil.ShutdownHookThread;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 1.Environment variables添加参数ROCKETMQ_HOME
+ */
 public class NamesrvStartup {
 
     private static InternalLogger log;
@@ -51,6 +54,13 @@ public class NamesrvStartup {
         main0(args);
     }
 
+    /**
+     * 功能描述：NameServer启动主流程
+     * {@link NamesrvStartup#createNamesrvController(java.lang.String[])}           创建——NameSever核心控制器
+     * {@link NamesrvStartup#start(org.apache.rocketmq.namesrv.NamesrvController)}  启动——NameServer核心控制器
+     * @param args
+     * @return
+     */
     public static NamesrvController main0(String[] args) {
 
         try {
@@ -68,6 +78,16 @@ public class NamesrvStartup {
         return null;
     }
 
+    /**
+     * 功能描述：创建NameServer核心控制器
+     *
+     * {@link NamesrvConfig}     配置类——NameServer
+     * {@link NettyServerConfig} 配置类——Netty
+     * @param args
+     * @return
+     * @throws IOException
+     * @throws JoranException
+     */
     public static NamesrvController createNamesrvController(String[] args) throws IOException, JoranException {
         System.setProperty(RemotingCommand.REMOTING_VERSION_KEY, Integer.toString(MQVersion.CURRENT_VERSION));
         //PackageConflictDetect.detectFastjson();
@@ -78,9 +98,10 @@ public class NamesrvStartup {
             System.exit(-1);
             return null;
         }
-
+        // 1.创建NameServer和Netty的属性配置类
         final NamesrvConfig namesrvConfig = new NamesrvConfig();
         final NettyServerConfig nettyServerConfig = new NettyServerConfig();
+        // 2.修改Netty监听端口为9876
         nettyServerConfig.setListenPort(9876);
         if (commandLine.hasOption('c')) {
             String file = commandLine.getOptionValue('c');
@@ -131,18 +152,28 @@ public class NamesrvStartup {
         return controller;
     }
 
+    /**
+     * 功能描述：启动NameServer核心控制类
+     * {@link NamesrvController#initialize()}  初始化——NameServer核心控制器
+     * 注册JVM钩子函数，以便监听Broker，消息生产者的网络请求
+     * @param controller
+     * @return
+     * @throws Exception
+     */
     public static NamesrvController start(final NamesrvController controller) throws Exception {
 
         if (null == controller) {
             throw new IllegalArgumentException("NamesrvController is null");
         }
 
+        // 初始化NameServerController
         boolean initResult = controller.initialize();
         if (!initResult) {
             controller.shutdown();
             System.exit(-3);
         }
 
+        // 注册JVM钩子函数，以便监听Broker，消息生产者的网络请求
         Runtime.getRuntime().addShutdownHook(new ShutdownHookThread(log, new Callable<Void>() {
             @Override
             public Void call() throws Exception {

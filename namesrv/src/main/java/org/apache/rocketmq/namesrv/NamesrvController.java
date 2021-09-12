@@ -60,6 +60,13 @@ public class NamesrvController {
     private Configuration configuration;
     private FileWatchService fileWatchService;
 
+
+    /**
+     * 功能描述：NameServer核心控制器的构造方法
+     * {@link RouteInfoManager#RouteInfoManager()} 路由实现类，包含Broker和Topic的相关信息
+     * @param namesrvConfig
+     * @param nettyServerConfig
+     */
     public NamesrvController(NamesrvConfig namesrvConfig, NettyServerConfig nettyServerConfig) {
         this.namesrvConfig = namesrvConfig;
         this.nettyServerConfig = nettyServerConfig;
@@ -73,10 +80,15 @@ public class NamesrvController {
         this.configuration.setStorePathFromConfig(this.namesrvConfig, "configStorePath");
     }
 
+    /**
+     * 功能描述：初始化NameServer核心控制器
+     * {@link RouteInfoManager#scanNotActiveBroker()} 10s扫描一次Broker，剔除处于不活跃状态的Broker
+     * @return
+     */
     public boolean initialize() {
-
+        // 1.加载KV配置
         this.kvConfigManager.load();
-
+        // 2.创建NettyServer网络处理对象
         this.remotingServer = new NettyRemotingServer(this.nettyServerConfig, this.brokerHousekeepingService);
 
         this.remotingExecutor =
@@ -84,6 +96,7 @@ public class NamesrvController {
 
         this.registerProcessor();
 
+        // 3.定时任务1：10s扫描一次Broker，移除处于不活跃状态的Broker
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -92,6 +105,7 @@ public class NamesrvController {
             }
         }, 5, 10, TimeUnit.SECONDS);
 
+        // 4.定时任务2：10min打印一次KV配置
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override

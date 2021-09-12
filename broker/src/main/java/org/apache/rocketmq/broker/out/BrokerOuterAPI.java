@@ -124,19 +124,21 @@ public class BrokerOuterAPI {
 
         final List<RegisterBrokerResult> registerBrokerResultList = new CopyOnWriteArrayList<>();
         List<String> nameServerAddressList = this.remotingClient.getNameServerAddressList();
+        // 遍历所有NameServer列表
         if (nameServerAddressList != null && nameServerAddressList.size() > 0) {
 
             final RegisterBrokerRequestHeader requestHeader = new RegisterBrokerRequestHeader();
-            requestHeader.setBrokerAddr(brokerAddr);
-            requestHeader.setBrokerId(brokerId);
-            requestHeader.setBrokerName(brokerName);
-            requestHeader.setClusterName(clusterName);
-            requestHeader.setHaServerAddr(haServerAddr);
+            // 封装请求头
+            requestHeader.setBrokerAddr(brokerAddr);    // broker地址
+            requestHeader.setBrokerId(brokerId);        // brokerId：isMaster?0:(>0)
+            requestHeader.setBrokerName(brokerName);    // brokerName
+            requestHeader.setClusterName(clusterName);  // clusterName
+            requestHeader.setHaServerAddr(haServerAddr);// Master地址，初次请求时为空，salve向NameServer注册后返回
             requestHeader.setCompressed(compressed);
-
+            // 请求体
             RegisterBrokerBody requestBody = new RegisterBrokerBody();
-            requestBody.setTopicConfigSerializeWrapper(topicConfigWrapper);
-            requestBody.setFilterServerList(filterServerList);
+            requestBody.setTopicConfigSerializeWrapper(topicConfigWrapper); // 主题配置
+            requestBody.setFilterServerList(filterServerList);              // 消息过滤服务器列表
             final byte[] body = requestBody.encode(compressed);
             final int bodyCrc32 = UtilAll.crc32(body);
             requestHeader.setBodyCrc32(bodyCrc32);
@@ -146,6 +148,7 @@ public class BrokerOuterAPI {
                     @Override
                     public void run() {
                         try {
+                            // 向NameServer发送心跳包
                             RegisterBrokerResult result = registerBroker(namesrvAddr, oneway, timeoutMills, requestHeader, body);
                             if (result != null) {
                                 registerBrokerResultList.add(result);
