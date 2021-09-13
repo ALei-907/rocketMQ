@@ -20,6 +20,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import org.apache.rocketmq.client.ClientConfig;
+import org.apache.rocketmq.client.MQAdmin;
 import org.apache.rocketmq.client.QueryResult;
 import org.apache.rocketmq.client.Validators;
 import org.apache.rocketmq.client.exception.MQBrokerException;
@@ -56,6 +57,18 @@ import org.apache.rocketmq.remoting.exception.RemotingException;
  * <p> <strong>Thread Safety:</strong> After configuring and starting process, this class can be regarded as thread-safe
  * and used among multiple threads context. </p>
  */
+
+/**
+ * 默认的消息生产者实现类
+ * {@link MQAdmin} 默认实现了该接口
+ * 主要方法
+ * 1.创建主题  {@link DefaultMQProducer#createTopic(java.lang.String, java.lang.String, int, int)}
+ * 2.根据时间戳从队列中查找偏移量  {@link DefaultMQProducer#searchOffset(org.apache.rocketmq.common.message.MessageQueue, long)}
+ * 3.查找该消息队列中最大的物理偏移量  {@link DefaultMQProducer#maxOffset(org.apache.rocketmq.common.message.MessageQueue)}
+ * 4.查找该消息队列中最小的物理偏移量  {@link DefaultMQProducer#minOffset(org.apache.rocketmq.common.message.MessageQueue)}
+ * 5.根据offsetMsgId查找消息  {@link DefaultMQProducer#viewMessage(java.lang.String)}
+ * .....
+ */
 public class DefaultMQProducer extends ClientConfig implements MQProducer {
 
     /**
@@ -71,26 +84,31 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      *
      * See {@linktourl http://rocketmq.apache.org/docs/core-concept/} for more discussion.
      */
+    // 生产者所属组，消息服务器在回查事物状态时会随机选择该组中任何一个生产者发起事物回查请求
     private String producerGroup;
 
     /**
      * Just for testing or demo program
      */
+    // 默认Topickey
     private String createTopicKey = TopicValidator.AUTO_CREATE_TOPIC_KEY_TOPIC;
 
     /**
      * Number of queues to create per default topic.
      */
+    // 默认主题在每一个Broker队列数量
     private volatile int defaultTopicQueueNums = 4;
 
     /**
      * Timeout for sending messages.
      */
+    //发送消息默认超时时间
     private int sendMsgTimeout = 3000;
 
     /**
      * Compress message body threshold, namely, message body larger than 4k will be compressed on default.
      */
+    // 消息体超过该值则启用压缩，默认4K
     private int compressMsgBodyOverHowmuch = 1024 * 4;
 
     /**
@@ -98,6 +116,7 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      *
      * This may potentially cause message duplication which is up to application developers to resolve.
      */
+    // 同步方式发送消息重试次数，默认为2
     private int retryTimesWhenSendFailed = 2;
 
     /**
@@ -105,16 +124,19 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      *
      * This may potentially cause message duplication which is up to application developers to resolve.
      */
+    // 异步方式发送消息重试次数，默认为2
     private int retryTimesWhenSendAsyncFailed = 2;
 
     /**
      * Indicate whether to retry another broker on sending failure internally.
      */
+    // 消息重试时选择另外一个Broker时，是否不等待存储结果就返回，默认false
     private boolean retryAnotherBrokerWhenNotStoreOK = false;
 
     /**
      * Maximum allowed message size in bytes.
      */
+    // 允许发送消息的最大消息长度，默认4M
     private int maxMessageSize = 1024 * 1024 * 4; // 4M
 
     /**
@@ -322,6 +344,15 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * @throws MQBrokerException if there is any error with broker.
      * @throws InterruptedException if the sending thread is interrupted.
      */
+    /**
+     * 功能描述：同步消息发送
+     * @param msg
+     * @return
+     * @throws MQClientException
+     * @throws RemotingException
+     * @throws MQBrokerException
+     * @throws InterruptedException
+     */
     @Override
     public SendResult send(
         Message msg) throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
@@ -341,6 +372,16 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * @throws RemotingException if there is any network-tier error.
      * @throws MQBrokerException if there is any error with broker.
      * @throws InterruptedException if the sending thread is interrupted.
+     */
+    /**
+     * 功能描述：同步消息发送
+     * @param msg
+     * @param timeout
+     * @return
+     * @throws MQClientException
+     * @throws RemotingException
+     * @throws MQBrokerException
+     * @throws InterruptedException
      */
     @Override
     public SendResult send(Message msg,
@@ -763,10 +804,10 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      * Create a topic on broker. This method will be removed in a certain version after April 5, 2020, so please do not
      * use this method.
      *
-     * @param key accesskey
-     * @param newTopic topic name
-     * @param queueNum topic's queue number
-     * @param topicSysFlag topic system flag
+     * @param key accesskey                 未实际作用，可以与newTopic相同
+     * @param newTopic topic name           主题名称
+     * @param queueNum topic's queue number 队列数量
+     * @param topicSysFlag topic system flag主题系统标签，默认为0
      * @throws MQClientException if there is any client error.
      */
     @Deprecated

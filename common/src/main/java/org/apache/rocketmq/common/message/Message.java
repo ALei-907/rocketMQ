@@ -24,11 +24,15 @@ import java.util.Map;
 
 public class Message implements Serializable {
     private static final long serialVersionUID = 8445773977080406428L;
-
+    // 主题
     private String topic;
+    // 消息Flag （RocketMQ不做处理）
     private int flag;
+    // 扩展属性
     private Map<String, String> properties;
+    // 消息体
     private byte[] body;
+    // 事物ID
     private String transactionId;
 
     public Message() {
@@ -38,11 +42,17 @@ public class Message implements Serializable {
         this(topic, "", "", 0, body, true);
     }
 
+    /**
+     * 功能描述：Message的全属性构造方法
+     * tags：用来设置properties（扩展属性）
+     * properties的Key在RocketMQ中有一些默认定义{@link org.apache.rocketmq.common.message.MessageConst}
+     */
     public Message(String topic, String tags, String keys, int flag, byte[] body, boolean waitStoreMsgOK) {
         this.topic = topic;
         this.flag = flag;
         this.body = body;
 
+        // 设置properties扩展属性
         if (tags != null && tags.length() > 0)
             this.setTags(tags);
 

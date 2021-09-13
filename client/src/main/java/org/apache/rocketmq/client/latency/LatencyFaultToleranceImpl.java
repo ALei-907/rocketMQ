@@ -29,10 +29,18 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
 
     private final ThreadLocalIndex whichItemWorst = new ThreadLocalIndex();
 
+    /**
+     * 功能藐视：更新失败条目
+     * 故障Broker描述类 {@link FaultItem}
+     * @param name  BrokerName
+     * @param currentLatency        消息发送故障延迟时间
+     * @param notAvailableDuration  不可用持续时长，在这个时间内，Broker将不可用
+     */
     @Override
     public void updateFaultItem(final String name, final long currentLatency, final long notAvailableDuration) {
         FaultItem old = this.faultItemTable.get(name);
         if (null == old) {
+            // 虽然无论是否故障都设置为了故障Broker，但是正常情况下StartTimestamp=（当前时间+0），所以下一次仍然可以正常使用并移除
             final FaultItem faultItem = new FaultItem(name);
             faultItem.setCurrentLatency(currentLatency);
             faultItem.setStartTimestamp(System.currentTimeMillis() + notAvailableDuration);
@@ -48,6 +56,11 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
         }
     }
 
+    /**
+     * 功能描述：判断Broker是否可用
+     * @param name
+     * @return
+     */
     @Override
     public boolean isAvailable(final String name) {
         final FaultItem faultItem = this.faultItemTable.get(name);
@@ -57,11 +70,19 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
         return true;
     }
 
+    /**
+     * 功能描述：移除失效Broker
+     * @param name BrokerName
+     */
     @Override
     public void remove(final String name) {
         this.faultItemTable.remove(name);
     }
 
+    /**
+     * 功能描述：尝试从规避的Broker中选择一个可用的Broker，如果没有找到返回null
+     * @return
+     */
     @Override
     public String pickOneAtLeast() {
         final Enumeration<FaultItem> elements = this.faultItemTable.elements();
@@ -96,9 +117,15 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
             '}';
     }
 
+    /**
+     * 类描述：失效Broker描述类
+     */
     class FaultItem implements Comparable<FaultItem> {
+        // 节点名称
         private final String name;
+        // 发送消息故障间隔(发送消息～同步返回结果时)
         private volatile long currentLatency;
+        // 恢复尝试时间
         private volatile long startTimestamp;
 
         public FaultItem(final String name) {
@@ -130,7 +157,9 @@ public class LatencyFaultToleranceImpl implements LatencyFaultTolerance<String> 
             return 0;
         }
 
+
         public boolean isAvailable() {
+            // 当前时间-(失效时间+持续时间)
             return (System.currentTimeMillis() - startTimestamp) >= 0;
         }
 
