@@ -153,6 +153,16 @@ public class TopicConfigManager extends ConfigManager {
         return this.topicConfigTable.get(topic);
     }
 
+    /**
+     * 功能描述：创建主题信息
+     * 向所有NameServer注册Topic信息 {@link BrokerController#registerBrokerAll(boolean, boolean, boolean)}
+     * @param topic
+     * @param defaultTopic
+     * @param remoteAddress
+     * @param clientDefaultTopicQueueNums
+     * @param topicSysFlag
+     * @return
+     */
     public TopicConfig createTopicInSendMessageMethod(final String topic, final String defaultTopic,
         final String remoteAddress, final int clientDefaultTopicQueueNums, final int topicSysFlag) {
         TopicConfig topicConfig = null;
@@ -186,9 +196,9 @@ public class TopicConfigManager extends ConfigManager {
                             topicConfig.setWriteQueueNums(queueNums);
                             int perm = defaultTopicConfig.getPerm();
                             perm &= ~PermName.PERM_INHERIT;
-                            topicConfig.setPerm(perm);
-                            topicConfig.setTopicSysFlag(topicSysFlag);
-                            topicConfig.setTopicFilterType(defaultTopicConfig.getTopicFilterType());
+                            topicConfig.setPerm(perm);    // 权限码
+                            topicConfig.setTopicSysFlag(topicSysFlag);  // 当前版本为保留字段
+                            topicConfig.setTopicFilterType(defaultTopicConfig.getTopicFilterType());  // 主题过滤方式
                         } else {
                             log.warn("Create new topic failed, because the default topic[{}] has no perm [{}] producer:[{}]",
                                 defaultTopic, defaultTopicConfig.getPerm(), remoteAddress);
@@ -218,6 +228,7 @@ public class TopicConfigManager extends ConfigManager {
             log.error("createTopicInSendMessageMethod exception", e);
         }
 
+        // 如果是新的主题，则向所有Broker注册
         if (createNew) {
             this.brokerController.registerBrokerAll(false, true, true);
         }

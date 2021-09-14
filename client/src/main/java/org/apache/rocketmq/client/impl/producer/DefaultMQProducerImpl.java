@@ -865,20 +865,20 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                     }
                     this.executeSendMessageHookBefore(context);
                 }
-
+                // 构建消息发送包
                 SendMessageRequestHeader requestHeader = new SendMessageRequestHeader();
-                requestHeader.setProducerGroup(this.defaultMQProducer.getProducerGroup());
-                requestHeader.setTopic(msg.getTopic());
-                requestHeader.setDefaultTopic(this.defaultMQProducer.getCreateTopicKey());
-                requestHeader.setDefaultTopicQueueNums(this.defaultMQProducer.getDefaultTopicQueueNums());
-                requestHeader.setQueueId(mq.getQueueId());
-                requestHeader.setSysFlag(sysFlag);
-                requestHeader.setBornTimestamp(System.currentTimeMillis());
-                requestHeader.setFlag(msg.getFlag());
-                requestHeader.setProperties(MessageDecoder.messageProperties2String(msg.getProperties()));
-                requestHeader.setReconsumeTimes(0);
+                requestHeader.setProducerGroup(this.defaultMQProducer.getProducerGroup());// 生产组
+                requestHeader.setTopic(msg.getTopic());                                   // 主题名称
+                requestHeader.setDefaultTopic(this.defaultMQProducer.getCreateTopicKey());// 默认创建主题Key
+                requestHeader.setDefaultTopicQueueNums(this.defaultMQProducer.getDefaultTopicQueueNums());// 该主题在单个Broker的默认队列数
+                requestHeader.setQueueId(mq.getQueueId());                                // 队列ID
+                requestHeader.setSysFlag(sysFlag);                                        // 消息系统标志(事物标志之类)
+                requestHeader.setBornTimestamp(System.currentTimeMillis());               // 消息发送时间
+                requestHeader.setFlag(msg.getFlag());                                     // 消息标记（MQ是不对Flag做任何处理的，交由应用程序进行处理）
+                requestHeader.setProperties(MessageDecoder.messageProperties2String(msg.getProperties()));// 消息扩展属性
+                requestHeader.setReconsumeTimes(0);                                       // 消息重试次数
                 requestHeader.setUnitMode(this.isUnitMode());
-                requestHeader.setBatch(msg instanceof MessageBatch);
+                requestHeader.setBatch(msg instanceof MessageBatch);                      // 是否批量消息
                 if (requestHeader.getTopic().startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
                     String reconsumeTimes = MessageAccessor.getReconsumeTime(msg);
                     if (reconsumeTimes != null) {
@@ -893,11 +893,13 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                     }
                 }
 
+                // 根据消息发送方式(SYNC,ASYNC,OneWay)进行网络传输
                 SendResult sendResult = null;
                 switch (communicationMode) {
                     case ASYNC:
                         Message tmpMessage = msg;
                         boolean messageCloned = false;
+                        // 1.是否压缩
                         if (msgBodyCompressed) {
                             //If msg body was compressed, msgbody should be reset using prevBody.
                             //Clone new message using commpressed message body and recover origin massage.
@@ -934,7 +936,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                             this);
                         break;
                     case ONEWAY:
-                    case SYNC:
+                    case SYNC: // 同步发送消息
                         long costTimeSync = System.currentTimeMillis() - beginStartTime;
                         if (timeout < costTimeSync) {
                             throw new RemotingTooMuchRequestException("sendKernelImpl call timeout");
@@ -954,6 +956,8 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                         break;
                 }
 
+                // 如果注册了消息发送的钩子函数，执行after逻辑
+                // 注意：如果消息发送过程中发生RemotingException,MQBrokerException,InterruptedException还是会执行
                 if (this.hasSendMessageHook()) {
                     context.setSendResult(sendResult);
                     this.executeSendMessageHookAfter(context);
