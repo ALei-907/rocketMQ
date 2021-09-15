@@ -448,12 +448,16 @@ public class DefaultMessageStore implements MessageStore {
 
     /**
      * 功能描述：消息存储
+     *  1.检测Broker是否支持写操作:  {@link DefaultMessageStore#checkStoreStatus()}
+     *  2.检测消息Topic和properties长度是否超标:   {@link DefaultMessageStore#checkStoreStatus()}
+     *  3.CommitLog文件写入:    {@link CommitLog#asyncPutMessage(org.apache.rocketmq.store.MessageExtBrokerInner)}
      * @param msg MessageInstance to store
      * @return
      */
     @Override
     public CompletableFuture<PutMessageResult> asyncPutMessage(MessageExtBrokerInner msg) {
         // 1.检测Broker状态信息是否支持写入
+        //   (Broker是否工作，Broker是否为Master，Broker是否可写，操作系统是否写繁忙)
         PutMessageStatus checkStoreStatus = this.checkStoreStatus();
         if (checkStoreStatus != PutMessageStatus.PUT_OK) {
             return CompletableFuture.completedFuture(new PutMessageResult(checkStoreStatus, null));
@@ -466,6 +470,8 @@ public class DefaultMessageStore implements MessageStore {
         }
 
         long beginTime = this.getSystemClock().now();
+
+        // 3.文件写入操作
         CompletableFuture<PutMessageResult> putResultFuture = this.commitLog.asyncPutMessage(msg);
 
         putResultFuture.thenAccept((result) -> {

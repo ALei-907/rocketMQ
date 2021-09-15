@@ -189,6 +189,9 @@ public class MappedFile extends ReferenceResource {
         return fileChannel;
     }
 
+    /**
+     * 功能描述：追加消息
+     */
     public AppendMessageResult appendMessage(final MessageExtBrokerInner msg, final AppendMessageCallback cb,
             PutMessageContext putMessageContext) {
         return appendMessagesInner(msg, cb, putMessageContext);
@@ -199,17 +202,27 @@ public class MappedFile extends ReferenceResource {
         return appendMessagesInner(messageExtBatch, cb, putMessageContext);
     }
 
+    /**
+     * 功能描述：将消息追加到MappedFile中
+     * 最终写入操作:  {@link CommitLog.DefaultAppendMessageCallback#doAppend(long, java.nio.ByteBuffer, int, org.apache.rocketmq.store.MessageExtBrokerInner, org.apache.rocketmq.store.CommitLog.PutMessageContext)}
+     */
     public AppendMessageResult appendMessagesInner(final MessageExt messageExt, final AppendMessageCallback cb,
             PutMessageContext putMessageContext) {
         assert messageExt != null;
         assert cb != null;
-
+        // 1.获取MappedFile当前的写指针
         int currentPos = this.wrotePosition.get();
 
+        // 2.如果当前写指针>=文件大小---->则表明文件已写满
         if (currentPos < this.fileSize) {
+            // 使用了共享内存的ByteBuffer(但是position，limit，capacity是独立的)
             ByteBuffer byteBuffer = writeBuffer != null ? writeBuffer.slice() : this.mappedByteBuffer.slice();
             byteBuffer.position(currentPos);
             AppendMessageResult result;
+            /**
+             * 写入操作
+             * {@link CommitLog.DefaultAppendMessageCallback#doAppend(long, java.nio.ByteBuffer, int, org.apache.rocketmq.store.MessageExtBrokerInner, org.apache.rocketmq.store.CommitLog.PutMessageContext)}
+             */
             if (messageExt instanceof MessageExtBrokerInner) {
                 result = cb.doAppend(this.getFileFromOffset(), byteBuffer, this.fileSize - currentPos,
                         (MessageExtBrokerInner) messageExt, putMessageContext);
@@ -223,6 +236,7 @@ public class MappedFile extends ReferenceResource {
             this.storeTimestamp = result.getStoreTimestamp();
             return result;
         }
+        // 3.超过文件大小返回未知错误
         log.error("MappedFile.appendMessage return null, wrotePosition: {} fileSize: {}", currentPos, this.fileSize);
         return new AppendMessageResult(AppendMessageStatus.UNKNOWN_ERROR);
     }

@@ -23,6 +23,7 @@ import java.util.function.Supplier;
  */
 public class AppendMessageResult {
     // Return code
+    // 追加结果状态码
     private AppendMessageStatus status;
     // Where to start writing
     private long wroteOffset;

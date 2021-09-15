@@ -55,6 +55,9 @@ public class CommitLog {
     protected static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     // End of file empty MAGIC CODE cbd43194
     protected final static int BLANK_MAGIC_CODE = -875286124;
+
+    // 可以看作是${ROCKETMQ_HOME}/store/commitLog文件夹
+    // MappedFile则对应该文件夹下一个的文件
     protected final MappedFileQueue mappedFileQueue;
     protected final DefaultMessageStore defaultMessageStore;
     private final FlushCommitLogService flushCommitLogService;
@@ -564,13 +567,16 @@ public class CommitLog {
         return keyBuilder.toString();
     }
 
+    /**
+     * 功能描述：写入CommitLog文件
+     *      1.在MappedFile里追加文件: {@link MappedFile#appendMessagesInner(org.apache.rocketmq.common.message.MessageExt, org.apache.rocketmq.store.AppendMessageCallback, org.apache.rocketmq.store.CommitLog.PutMessageContext)}
+     */
     public CompletableFuture<PutMessageResult> asyncPutMessage(final MessageExtBrokerInner msg) {
-        // Set the storage time
+        // 设置消息存入时间
         msg.setStoreTimestamp(System.currentTimeMillis());
-        // Set the message body BODY CRC (consider the most appropriate setting
-        // on the client)
+        // Set the message body BODY CRC (consider the most appropriate setting on the client)
         msg.setBodyCRC(UtilAll.crc32(msg.getBody()));
-        // Back to Results
+        // 返回的结果集
         AppendMessageResult result = null;
 
         StoreStatsService storeStatsService = this.defaultMessageStore.getStoreStatsService();
@@ -616,21 +622,31 @@ public class CommitLog {
             return CompletableFuture.completedFuture(encodeResult);
         }
         msg.setEncodedBuff(putMessageThreadLocal.getEncoder().encoderBuffer);
+
+        // 预先：获取该消息在消息队列的偏移量。CommitLog中保存了当前所有消息队列的当前待写入偏移量
         PutMessageContext putMessageContext = new PutMessageContext(generateKey(putMessageThreadLocal.getKeyBuilder(), msg));
 
         long elapsedTimeInLock = 0;
+
+        // 准备写入操作
         MappedFile unlockMappedFile = null;
 
+        // 1.在写入CommitLog之前，先申请putMessageLock，也就是消息存储到CommitLog文件是串行的
         putMessageLock.lock(); //spin or ReentrantLock ,depending on store config
         try {
             MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
             long beginLockTimestamp = this.defaultMessageStore.getSystemClock().now();
             this.beginTimeInLock = beginLockTimestamp;
 
-            // Here settings are stored timestamp, in order to ensure an orderly
-            // global
+            // 2.设置消息存储时间
             msg.setStoreTimestamp(beginLockTimestamp);
 
+            //3.获取MappedFile
+            /**
+             * 如果MappedFile文件为空，表明${ROCKET_HOME}/store/commitLog目录下不存在任何文件
+             * 说明本次消息是第一次消息发送，所以用偏移量0创建第一个commitLog文件
+             * 如果创建失败，很有可能是磁盘空间或者权限不足
+             */
             if (null == mappedFile || mappedFile.isFull()) {
                 mappedFile = this.mappedFileQueue.getLastMappedFile(0); // Mark: NewFile may be cause noise
             }
@@ -640,13 +656,18 @@ public class CommitLog {
                 return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.CREATE_MAPEDFILE_FAILED, null));
             }
 
+            // 4.往MappedFile追加消息
+            /**
+             * 将消息追加到MappedFile中
+             * {@link org.apache.rocketmq.store.MappedFile#appendMessagesInner(org.apache.rocketmq.common.message.MessageExt, org.apache.rocketmq.store.AppendMessageCallback, org.apache.rocketmq.store.CommitLog.PutMessageContext)}
+             */
             result = mappedFile.appendMessage(msg, this.appendMessageCallback, putMessageContext);
             switch (result.getStatus()) {
-                case PUT_OK:
+                case PUT_OK:        // 追加超过
                     break;
-                case END_OF_FILE:
+                case END_OF_FILE:   // 前一个文件满
                     unlockMappedFile = mappedFile;
-                    // Create a new file, re-write the message
+                    // 创建一个新的MappedFile文件，并重新写入数据
                     mappedFile = this.mappedFileQueue.getLastMappedFile(0);
                     if (null == mappedFile) {
                         // XXX: warn and notify me
@@ -671,6 +692,7 @@ public class CommitLog {
             elapsedTimeInLock = this.defaultMessageStore.getSystemClock().now() - beginLockTimestamp;
             beginTimeInLock = 0;
         } finally {
+            // 4.释放锁
             putMessageLock.unlock();
         }
 
@@ -688,6 +710,7 @@ public class CommitLog {
         storeStatsService.getSinglePutMessageTopicTimesTotal(msg.getTopic()).incrementAndGet();
         storeStatsService.getSinglePutMessageTopicSizeTotal(topic).addAndGet(result.getWroteBytes());
 
+        // 磁盘写入
         CompletableFuture<PutMessageStatus> flushResultFuture = submitFlushRequest(result, msg);
         CompletableFuture<PutMessageStatus> replicaResultFuture = submitReplicaRequest(result, msg);
         return flushResultFuture.thenCombine(replicaResultFuture, (flushStatus, replicaStatus) -> {
@@ -1260,6 +1283,14 @@ public class CommitLog {
             this.maxMessageSize = size;
         }
 
+        /**
+         * 功能描述：文件写入操作
+         *        1.设置消息全局唯一ID
+         *        2.判断是否有剩余空间
+         *        3.写入MappedFile映射的内存中(并没有刷写到磁盘！！！)
+         *
+         *  AppendMessageResult包含来操作的结果枚举:  {@link AppendMessageStatus}
+         */
         public AppendMessageResult doAppend(final long fileFromOffset, final ByteBuffer byteBuffer, final int maxBlank,
             final MessageExtBrokerInner msgInner, PutMessageContext putMessageContext) {
             // STORETIMESTAMP + STOREHOSTADDRESS + OFFSET <br>
@@ -1267,6 +1298,7 @@ public class CommitLog {
             // PHY OFFSET
             long wroteOffset = fileFromOffset + byteBuffer.position();
 
+            // 1.创建全局唯一消息ID，消息ID16字节(4字节IP，4字节端口，8字节消息偏移量)
             Supplier<String> msgIdSupplier = () -> {
                 int sysflag = msgInner.getSysFlag();
                 int msgIdLen = (sysflag & MessageSysFlag.STOREHOSTADDRESS_V6_FLAG) == 0 ? 4 + 4 + 8 : 16 + 4 + 8;
@@ -1303,7 +1335,7 @@ public class CommitLog {
             ByteBuffer preEncodeBuffer = msgInner.getEncodedBuff();
             final int msgLen = preEncodeBuffer.getInt(0);
 
-            // Determines whether there is sufficient free space
+            // 2.确认是否有足够的空间，如果空间不足，会返回一个状态信息，Broker会重新创建一个CommitLog来存储该文件
             if ((msgLen + END_FILE_MIN_BLANK_LENGTH) > maxBlank) {
                 this.msgStoreItemMemory.clear();
                 // 1 TOTALSIZE
@@ -1333,12 +1365,25 @@ public class CommitLog {
             preEncodeBuffer.putLong(pos, msgInner.getStoreTimestamp());
 
 
+            // 3.将消息内容存储到ByteBuffer中，然后创建AppendMessageResult
+            // 在这只是将消息存储在MappedFile对应的内存映射Buffer中，并没有刷写到磁盘
             final long beginTimeMills = CommitLog.this.defaultMessageStore.now();
             // Write messages to the queue buffer
             byteBuffer.put(preEncodeBuffer);
             msgInner.setEncodedBuff(null);
-            AppendMessageResult result = new AppendMessageResult(AppendMessageStatus.PUT_OK, wroteOffset, msgLen, msgIdSupplier,
-                msgInner.getStoreTimestamp(), queueOffset, CommitLog.this.defaultMessageStore.now() - beginTimeMills);
+            /**
+             * AppendMessageResult包含来操作的结果枚举
+             * {@link AppendMessageStatus}
+             */
+            AppendMessageResult result = new AppendMessageResult(
+                    AppendMessageStatus.PUT_OK, // 消息追加的结果枚举
+                    wroteOffset,                // 消息的物理偏移量
+                    msgLen,                     // 消息长度
+                    msgIdSupplier,              // 消息ID
+                msgInner.getStoreTimestamp(),   // 消息存储的时间戳
+                    queueOffset,                // 消息消费队列逻辑偏移量，类似下标
+                    CommitLog.this.defaultMessageStore.now() - beginTimeMills // 0:表示当前未使用
+            );
 
             switch (tranType) {
                 case MessageSysFlag.TRANSACTION_PREPARED_TYPE:
@@ -1347,6 +1392,7 @@ public class CommitLog {
                 case MessageSysFlag.TRANSACTION_NOT_TYPE:
                 case MessageSysFlag.TRANSACTION_COMMIT_TYPE:
                     // The next update ConsumeQueue information
+                    // 4.更新队列逻辑偏移量
                     CommitLog.this.topicQueueTable.put(key, ++queueOffset);
                     break;
                 default:
