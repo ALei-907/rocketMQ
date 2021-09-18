@@ -332,7 +332,7 @@ public class DefaultMessageStore implements MessageStore {
         this.storeStatsService.start();
 
         this.createTempFile();
-        // 添加一些定时任务
+        // 添加一些定时任务，比如清除过期文件
         this.addScheduleTask();
         this.shutdown = false;
     }
