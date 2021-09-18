@@ -47,9 +47,16 @@ public abstract class ServiceThread implements Runnable {
         if (!started.compareAndSet(false, true)) {
             return;
         }
+        // 1.设置停止标志
         stopped = false;
+        // 2.配置线程参数
         this.thread = new Thread(this, getServiceName());
+        // 3.设置守护线程标志
         this.thread.setDaemon(isDaemon);
+        // 4.线程启动
+        /**
+         * {@link org.apache.rocketmq.store.DefaultMessageStore.ReputMessageService#run()}
+         */
         this.thread.start();
     }
 

@@ -29,21 +29,39 @@ import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 
+/**
+ * 映射文件队列
+ * 主要功能
+ *  1.根据消息存储时间戳来查找MappedFile：{@link MappedFileQueue#getMappedFileByTime(long)}
+ *  2.根据消息偏移量offset查找MappedFile：{@link MappedFileQueue#findMappedFileByOffset(long, boolean)}
+ *  3.获取存储文件最小偏移量:{@link MappedFileQueue#getMinOffset()}
+ *  4.获取存储文件最大偏移量:{@link MappedFileQueue#getMaxOffset()}
+ *  5.返回存储文件的当前写指针:{@link MappedFileQueue#getMaxWrotePosition()}
+ *
+ *  内存映射文件:{@link MappedFile}
+ */
 public class MappedFileQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static final InternalLogger LOG_ERROR = InternalLoggerFactory.getLogger(LoggerName.STORE_ERROR_LOGGER_NAME);
 
     private static final int DELETE_FILES_BATCH_MAX = 10;
 
+    // 存储目录
     private final String storePath;
 
+    // 单个文件的存储大小
     private final int mappedFileSize;
 
+    // MappedFile文件集合
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
 
+    // 创建MappedFile服务类
     private final AllocateMappedFileService allocateMappedFileService;
 
+    // 当前刷盘指针，表示指针之前的数据将全部持久化到磁盘
     private long flushedWhere = 0;
+
+    // 当前数据提交指针，内存中ByteBuffer当前的写指针，该值大于flushedWhere
     private long committedWhere = 0;
 
     private volatile long storeTimestamp = 0;
@@ -74,19 +92,25 @@ public class MappedFileQueue {
         }
     }
 
+    /**
+     * 功能描述：根据消息存储时间戳来查找MappedFile
+     * @param timestamp
+     * @return
+     */
     public MappedFile getMappedFileByTime(final long timestamp) {
         Object[] mfs = this.copyMappedFiles(0);
 
         if (null == mfs)
             return null;
-
+        // 1.从MappedFile的第一个文件开始查找
         for (int i = 0; i < mfs.length; i++) {
             MappedFile mappedFile = (MappedFile) mfs[i];
+            // 2.找到第一个最后一次更新时间大于待查找时间戳的文件
             if (mappedFile.getLastModifiedTimestamp() >= timestamp) {
                 return mappedFile;
             }
         }
-
+        // 3.如果不存在就返回最后一个文件
         return (MappedFile) mfs[mfs.length - 1];
     }
 
@@ -144,14 +168,19 @@ public class MappedFileQueue {
         }
     }
 
+    /**
+     * 功能描述：加载CommitLog文件
+     * @return
+     */
     public boolean load() {
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
         if (files != null) {
             // ascending order
+            // 将${ROCKET_HOME}/store/CommitLog下的所有文件根据文件名进行排序
             Arrays.sort(files);
             for (File file : files) {
-
+                // 如果存在某一个文件与配置文件中设置的mappedFile大小不一致，则忽略该文件下的所有文件
                 if (file.length() != this.mappedFileSize) {
                     log.warn(file + "\t" + file.length()
                         + " length not matched message store config value, please check it manually");
@@ -159,11 +188,12 @@ public class MappedFileQueue {
                 }
 
                 try {
+                    // 创建MappedFile对象，并设置WrotePosition，FlushedPosition，CommittedPosition为MappedFile的大小
                     MappedFile mappedFile = new MappedFile(file.getPath(), mappedFileSize);
-
                     mappedFile.setWrotePosition(this.mappedFileSize);
                     mappedFile.setFlushedPosition(this.mappedFileSize);
                     mappedFile.setCommittedPosition(this.mappedFileSize);
+                    // 加入到MappedFile文件集合
                     this.mappedFiles.add(mappedFile);
                     log.info("load " + file.getPath() + " OK");
                 } catch (IOException e) {
@@ -285,10 +315,15 @@ public class MappedFileQueue {
         return true;
     }
 
+    /**
+     * 功能描述：获取存储文件最小偏移量
+     * @return
+     */
     public long getMinOffset() {
 
         if (!this.mappedFiles.isEmpty()) {
             try {
+                // 第一个文件的起始offset
                 return this.mappedFiles.get(0).getFileFromOffset();
             } catch (IndexOutOfBoundsException e) {
                 //continue;
@@ -299,14 +334,23 @@ public class MappedFileQueue {
         return -1;
     }
 
+    /**
+     * 功能描述：获取存储文件最大偏移量
+     * @return
+     */
     public long getMaxOffset() {
         MappedFile mappedFile = getLastMappedFile();
         if (mappedFile != null) {
+            // 获取最后一个MappedFile的起始offset+mappedFile的position指针(可读指针)
             return mappedFile.getFileFromOffset() + mappedFile.getReadPosition();
         }
         return 0;
     }
 
+    /**
+     * 功能描述：返回存储文件的当前写指针
+     * @return
+     */
     public long getMaxWrotePosition() {
         MappedFile mappedFile = getLastMappedFile();
         if (mappedFile != null) {
@@ -458,6 +502,15 @@ public class MappedFileQueue {
      * @param offset Offset.
      * @param returnFirstOnNotFound If the mapped file is not found, then return the first one.
      * @return Mapped file or null (when not found and returnFirstOnNotFound is <code>false</code>).
+     */
+    /**
+     * 功能描述：根据消息偏移量offset查找MappedFile
+     *      1.找到第一个文件与最后一个文件
+     *      2.offset对应的文件等于:(offset-firstMappedFile.getFromOffset) * MappedFileSize
+     *          这是因为，所有RocketMQ采取定时删除存储文件的策略，所以在特定时间内00000000000不一定是第一个文件
+     * @param offset
+     * @param returnFirstOnNotFound
+     * @return
      */
     public MappedFile findMappedFileByOffset(final long offset, final boolean returnFirstOnNotFound) {
         try {

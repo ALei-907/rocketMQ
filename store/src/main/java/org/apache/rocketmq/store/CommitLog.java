@@ -48,6 +48,7 @@ import org.apache.rocketmq.store.schedule.ScheduleMessageService;
 
 /**
  * Store all metadata downtime for recovery, data protection reliability
+ * 存储所有元数据停机时间,以进行恢复-数据保护可靠性
  */
 public class CommitLog {
     // Message's MAGIC CODE daa320a7
@@ -168,10 +169,14 @@ public class CommitLog {
 
     /**
      * When the normal exit, data recovery, all memory data have been flush
+     * 功能描述：Broker正常停止，文件恢复的实现
      */
     public void recoverNormally(long maxPhyOffsetOfConsumeQueue) {
+        // checkCRCOnRecover参数设置在进行文件恢复时查找消息时是否验证CRC
         boolean checkCRCOnRecover = this.defaultMessageStore.getMessageStoreConfig().isCheckCRCOnRecover();
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
+
+        // 1.Broker正常停止重新启动时，从倒数第三个文件开始进行恢复，如果不足三个文件就从第一个开始
         if (!mappedFiles.isEmpty()) {
             // Began to recover from the last third file
             int index = mappedFiles.size() - 3;
@@ -180,25 +185,31 @@ public class CommitLog {
 
             MappedFile mappedFile = mappedFiles.get(index);
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
-            long processOffset = mappedFile.getFileFromOffset();
-            long mappedFileOffset = 0;
+            long processOffset = mappedFile.getFileFromOffset();    // commitLog文件已确认的物理偏移量
+            long mappedFileOffset = 0;                              // 当前文件已校验通过的offset
             while (true) {
                 DispatchRequest dispatchRequest = this.checkMessageAndReturnSize(byteBuffer, checkCRCOnRecover);
                 int size = dispatchRequest.getMsgSize();
                 // Normal data
+                // *:查找结果为true,消息长度大于0，指针后移
                 if (dispatchRequest.isSuccess() && size > 0) {
                     mappedFileOffset += size;
                 }
-                // Come the end of the file, switch to the next file Since the
-                // return 0 representatives met last hole,
-                // this can not be included in truncate offset
+                // *:查找结果为true,消息长度等于0,表示已经到文件的末尾了
+                /**
+                 * Come the end of the file, switch to the next file Since the
+                 * return 0 representatives met last hole,
+                 * this can not be included in truncate offset
+                 */
                 else if (dispatchRequest.isSuccess() && size == 0) {
                     index++;
+                    // *:如果没有下个文件就退出
                     if (index >= mappedFiles.size()) {
                         // Current branch can not happen
                         log.info("recover last 3 physics file over, last mapped file " + mappedFile.getFileName());
                         break;
                     } else {
+                        // *:如果有下个文件，就重置processOffset,mappedFileOffset并重复该步骤
                         mappedFile = mappedFiles.get(index);
                         byteBuffer = mappedFile.sliceByteBuffer();
                         processOffset = mappedFile.getFileFromOffset();
@@ -207,6 +218,7 @@ public class CommitLog {
                     }
                 }
                 // Intermediate file read error
+                // *:文件未填满所有信息，跳出循环，结束遍历文件
                 else if (!dispatchRequest.isSuccess()) {
                     log.info("recover physics file end, " + mappedFile.getFileName());
                     break;
@@ -846,11 +858,18 @@ public class CommitLog {
 
     }
 
+    /**
+     * 功能描述：同步刷盘请求
+     * @param result
+     * @param messageExt
+     * @return
+     */
     public CompletableFuture<PutMessageStatus> submitFlushRequest(AppendMessageResult result, MessageExt messageExt) {
         // Synchronization flush
         if (FlushDiskType.SYNC_FLUSH == this.defaultMessageStore.getMessageStoreConfig().getFlushDiskType()) {
             final GroupCommitService service = (GroupCommitService) this.flushCommitLogService;
             if (messageExt.isWaitStoreMsgOK()) {
+                // 构建同步请求任务提交到GroupCommitService中
                 GroupCommitRequest request = new GroupCommitRequest(result.getWroteOffset() + result.getWroteBytes(),
                         this.defaultMessageStore.getMessageStoreConfig().getSyncFlushTimeout());
                 service.putRequest(request);
@@ -911,12 +930,20 @@ public class CommitLog {
         return -1;
     }
 
+    /**
+     * 功能描述：获取CommitLog目录最小偏移量
+     * @return
+     */
     public long getMinOffset() {
+        // 1.首先获取CommitLog目录下的第一个文件
         MappedFile mappedFile = this.mappedFileQueue.getFirstMappedFile();
+        // 2.检验CommitLog文件是否可用
         if (mappedFile != null) {
             if (mappedFile.isAvailable()) {
+                // *:文件可用,      返回该文件的初始偏移量
                 return mappedFile.getFileFromOffset();
             } else {
+                // *:文件不可用,     返回下个文件的初始偏移量
                 return this.rollNextFile(mappedFile.getFileFromOffset());
             }
         }
@@ -924,18 +951,30 @@ public class CommitLog {
         return -1;
     }
 
+    /**
+     * 功能描述：根据偏移量和消息长度查找消息
+     * @param offset
+     * @param size
+     * @return
+     */
     public SelectMappedBufferResult getMessage(final long offset, final int size) {
         int mappedFileSize = this.defaultMessageStore.getMessageStoreConfig().getMappedFileSizeCommitLog();
+        // 1.根据偏移量找到所在的物理文件
         MappedFile mappedFile = this.mappedFileQueue.findMappedFileByOffset(offset, offset == 0);
+
         if (mappedFile != null) {
+            // 2.取模获取文件内的偏移量pos
             int pos = (int) (offset % mappedFileSize);
+            // 重试获取读取4个字节获取消息的实际长度，最后读取指定字节
             return mappedFile.selectMappedBuffer(pos, size);
         }
         return null;
     }
 
     public long rollNextFile(final long offset) {
+        // 1.获取文件大小
         int mappedFileSize = this.defaultMessageStore.getMessageStoreConfig().getMappedFileSizeCommitLog();
+        // 2.获取下个文件的初始偏移量
         return offset + mappedFileSize - offset % mappedFileSize;
     }
 
@@ -1135,8 +1174,13 @@ public class CommitLog {
         }
     }
 
+    /**
+     * 同步请求任务
+     */
     public static class GroupCommitRequest {
+        // 刷盘点偏移量
         private final long nextOffset;
+        // 刷盘结果
         private CompletableFuture<PutMessageStatus> flushOKFuture = new CompletableFuture<>();
         private final long startTimestamp = System.currentTimeMillis();
         private long timeoutMillis = Long.MAX_VALUE;
@@ -1169,7 +1213,9 @@ public class CommitLog {
      * GroupCommit Service
      */
     class GroupCommitService extends FlushCommitLogService {
+        // 同步刷盘任务-暂存容器
         private volatile LinkedList<GroupCommitRequest> requestsWrite = new LinkedList<GroupCommitRequest>();
+        // 线程每次处理的request容器
         private volatile LinkedList<GroupCommitRequest> requestsRead = new LinkedList<GroupCommitRequest>();
         private final PutMessageSpinLock lock = new PutMessageSpinLock();
 

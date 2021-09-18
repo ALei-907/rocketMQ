@@ -152,7 +152,14 @@ public class ConsumeQueue {
         }
     }
 
+    /**
+     * 功能描述：根据消息存储时间来查找
+     *      1.根据时间来查找文件:{@link MappedFileQueue#getMappedFileByTime(long)}
+     * @param timestamp
+     * @return
+     */
     public long getOffsetInQueueByTime(final long timestamp) {
+        // 1.根据时间来查找文件
         MappedFile mappedFile = this.mappedFileQueue.getMappedFileByTime(timestamp);
         if (mappedFile != null) {
             long offset = 0;
@@ -162,6 +169,7 @@ public class ConsumeQueue {
             long leftIndexValue = -1L, rightIndexValue = -1L;
             long minPhysicOffset = this.defaultMessageStore.getMinPhyOffset();
             SelectMappedBufferResult sbr = mappedFile.selectMappedBuffer(0);
+            // 2. 二分查找
             if (null != sbr) {
                 ByteBuffer byteBuffer = sbr.getByteBuffer();
                 high = byteBuffer.limit() - CQ_STORE_UNIT_SIZE;
@@ -376,6 +384,9 @@ public class ConsumeQueue {
         return this.minLogicOffset / CQ_STORE_UNIT_SIZE;
     }
 
+    /**
+     * {@link ConsumeQueue#putMessagePositionInfo(long, int, long, long)}
+     */
     public void putMessagePositionInfoWrapper(DispatchRequest request) {
         final int maxRetries = 30;
         boolean canWrite = this.defaultMessageStore.getRunningFlags().isCQWriteable();
@@ -395,6 +406,9 @@ public class ConsumeQueue {
                         topic, queueId, request.getCommitLogOffset());
                 }
             }
+            /**
+             * {@link ConsumeQueue#putMessagePositionInfo(long, int, long, long)}
+             */
             boolean result = this.putMessagePositionInfo(request.getCommitLogOffset(),
                 request.getMsgSize(), tagsCode, request.getConsumeQueueOffset());
             if (result) {
@@ -422,6 +436,11 @@ public class ConsumeQueue {
         this.defaultMessageStore.getRunningFlags().makeLogicsQueueError();
     }
 
+    /**
+     * 功能描述：依次将消息偏移量，消息长度，tag hashCode写入到ByteBuffer中，并根据ConsumeQueueOffset计算ConsumeQueue中的物理地址
+     *         将内容追加到ConsumeQueue的内存映射文件中(本操作只追加不刷盘)
+     *         ConsumeQueue的刷盘方式固定为异步刷盘模式
+     */
     private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
         final long cqOffset) {
 
@@ -488,16 +507,26 @@ public class ConsumeQueue {
         }
     }
 
+    /**
+     * 功能描述：根据startIndex获取消息消费队列条目
+     * @param startIndex
+     * @return
+     */
     public SelectMappedBufferResult getIndexBuffer(final long startIndex) {
+        // 1.文件大小
         int mappedFileSize = this.mappedFileSize;
+        // 2.startIndex*20得到consumeQueue中的物理偏移量(8+4+8)
         long offset = startIndex * CQ_STORE_UNIT_SIZE;
         if (offset >= this.getMinLogicOffset()) {
+            // 3.根据偏移量定位到具体的物理文件
             MappedFile mappedFile = this.mappedFileQueue.findMappedFileByOffset(offset);
             if (mappedFile != null) {
+                // *：通过offset与物理文件大小取模获取在该文件的偏移量，从而从偏移量开始获取连续的20个字节
                 SelectMappedBufferResult result = mappedFile.selectMappedBuffer((int) (offset % mappedFileSize));
                 return result;
             }
         }
+        // 4.offset<minLogicOffset,表示文件已经被删除
         return null;
     }
 
