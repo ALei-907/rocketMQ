@@ -76,7 +76,12 @@ public class PullMessageService extends ServiceThread {
         return scheduledExecutorService;
     }
 
+    /**
+     *
+     * @param pullRequest
+     */
     private void pullMessage(final PullRequest pullRequest) {
+        // 1.根据消费者组名从MQClientInstance中获取消费者内部实现类MQConsumerInner
         final MQConsumerInner consumer = this.mQClientFactory.selectConsumer(pullRequest.getConsumerGroup());
         if (consumer != null) {
             DefaultMQPushConsumerImpl impl = (DefaultMQPushConsumerImpl) consumer;
@@ -86,13 +91,23 @@ public class PullMessageService extends ServiceThread {
         }
     }
 
+    /**
+     * 拉取消息的服务
+     */
     @Override
     public void run() {
         log.info(this.getServiceName() + " service started");
-
+        // 1.判断是否需要继续拉取消息
         while (!this.isStopped()) {
             try {
+                // 2.获取一个pullRequest消息拉取任务,队列空则阻塞
+                /**
+                 * pullRequest何时加入到阻塞队列的？
+                 * 延迟添加:    {@link PullMessageService#executePullRequestLater(org.apache.rocketmq.client.impl.consumer.PullRequest, long)}
+                 * 立即添加:    {@link PullMessageService#executePullRequestImmediately(org.apache.rocketmq.client.impl.consumer.PullRequest)}
+                 */
                 PullRequest pullRequest = this.pullRequestQueue.take();
+                // 3.消息拉取
                 this.pullMessage(pullRequest);
             } catch (InterruptedException ignored) {
             } catch (Exception e) {

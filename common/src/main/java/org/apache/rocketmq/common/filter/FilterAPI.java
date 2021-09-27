@@ -36,6 +36,13 @@ public class FilterAPI {
         return simple;
     }
 
+    /**
+     * 功能描述:构建主题订阅信息
+     * @param topic
+     * @param subString
+     * @return
+     * @throws Exception
+     */
     public static SubscriptionData buildSubscriptionData(String topic, String subString) throws Exception {
         SubscriptionData subscriptionData = new SubscriptionData();
         subscriptionData.setTopic(topic);

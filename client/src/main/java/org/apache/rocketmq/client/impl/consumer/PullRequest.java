@@ -18,11 +18,24 @@ package org.apache.rocketmq.client.impl.consumer;
 
 import org.apache.rocketmq.common.message.MessageQueue;
 
+/**
+ * 消息消费请求
+ */
 public class PullRequest {
+    // 消费者组
     private String consumerGroup;
+    // 待拉取消费队列
     private MessageQueue messageQueue;
+    // 消息处理队列
+    /**
+     * 是messageQueue在消费端的重现,快照
+     * PullMessageService从消息服务器默认每次拉取32条消息，按消息的队列偏移量存放在ProcessQueue中
+     * PullMessageService然后将消息提交到消费者消费线程池，消息成功消费后从processQueue删除
+     */
     private ProcessQueue processQueue;
+    // 待拉取MessageQueue的偏移量
     private long nextOffset;
+    // 是否被锁定
     private boolean previouslyLocked = false;
 
     public boolean isPreviouslyLocked() {

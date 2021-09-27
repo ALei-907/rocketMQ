@@ -149,6 +149,7 @@ public class PullMessageProcessor extends AsyncNettyRequestProcessor implements 
             return response;
         }
 
+        // 根据主题，消息过滤表达式构建订阅消息实体，如果不是TAG模式，构建过滤数据ConsumeFilterData
         SubscriptionData subscriptionData = null;
         ConsumerFilterData consumerFilterData = null;
         if (hasSubscriptionFlag) {
@@ -227,6 +228,8 @@ public class PullMessageProcessor extends AsyncNettyRequestProcessor implements 
             return response;
         }
 
+        // 构建消息过滤对象，ExpressionForRetryMessageFilter，支持对重试主题的过滤
+        //                ExpressionMessageFilter，不支持对重试主题的过滤
         MessageFilter messageFilter;
         if (this.brokerController.getBrokerConfig().isFilterSupportRetry()) {
             messageFilter = new ExpressionForRetryMessageFilter(subscriptionData, consumerFilterData,
@@ -236,10 +239,19 @@ public class PullMessageProcessor extends AsyncNettyRequestProcessor implements 
                 this.brokerController.getConsumerFilterManager());
         }
 
+
+        // 2.调用MessageStore.getMessage查找消息
         final GetMessageResult getMessageResult =
-            this.brokerController.getMessageStore().getMessage(requestHeader.getConsumerGroup(), requestHeader.getTopic(),
-                requestHeader.getQueueId(), requestHeader.getQueueOffset(), requestHeader.getMaxMsgNums(), messageFilter);
+            this.brokerController.getMessageStore().getMessage(
+                    requestHeader.getConsumerGroup(),   // 消费组名称
+                    requestHeader.getTopic(),           // 主题名称
+                    requestHeader.getQueueId(),         // 队列ID
+                    requestHeader.getQueueOffset(),     // 待拉取的偏移量
+                    requestHeader.getMaxMsgNums(),      // 最大拉取消息数
+                    messageFilter                       // 消息过滤器
+            );
         if (getMessageResult != null) {
+            // 设置响应体
             response.setRemark(getMessageResult.getStatus().name());
             responseHeader.setNextBeginOffset(getMessageResult.getNextBeginOffset());
             responseHeader.setMinOffset(getMessageResult.getMinOffset());

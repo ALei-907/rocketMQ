@@ -242,9 +242,11 @@ public class MQClientInstance {
                     }
                     // Start request-response channel
                     this.mQClientAPIImpl.start();
-                    // Start various schedule tasks
+
+                    // 包括向所有的Broker发送心跳包，拉取Broker的路由信息等等
                     this.startScheduledTask();
-                    // Start pull service
+
+                    // pullMessageService服务负责消息的拉取
                     this.pullMessageService.start();
                     // Start rebalance service
                     this.rebalanceService.start();
@@ -981,10 +983,12 @@ public class MQClientInstance {
     }
 
     public void doRebalance() {
+        // 遍历所有的消费者
         for (Map.Entry<String, MQConsumerInner> entry : this.consumerTable.entrySet()) {
             MQConsumerInner impl = entry.getValue();
             if (impl != null) {
                 try {
+                    // 对消费者进行doRebalance()
                     impl.doRebalance();
                 } catch (Throwable e) {
                     log.error("doRebalance exception", e);

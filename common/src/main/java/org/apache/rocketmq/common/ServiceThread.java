@@ -55,7 +55,14 @@ public abstract class ServiceThread implements Runnable {
         this.thread.setDaemon(isDaemon);
         // 4.线程启动
         /**
+         * CommitLog转发消息至ConsumeQueue和IndexFile
          * {@link org.apache.rocketmq.store.DefaultMessageStore.ReputMessageService#run()}
+         *
+         * 消息拉取服务:
+         * {@link org.apache.rocketmq.client.impl.consumer.PullMessageService#run()}
+         *
+         * 消息队列重新分布:
+         * {@link org.apache.rocketmq.client.impl.consumer.RebalanceService#run()}
          */
         this.thread.start();
     }

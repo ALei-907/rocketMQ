@@ -584,14 +584,18 @@ public class DefaultMessageStore implements MessageStore {
         return commitLog;
     }
 
+    /**
+     * 根据主题名称与队列编号获取消息消费队列
+     */
     public GetMessageResult getMessage(final String group, final String topic, final int queueId, final long offset,
         final int maxMsgNums,
         final MessageFilter messageFilter) {
+        // 1.是否关闭服务
         if (this.shutdown) {
             log.warn("message store has shutdown, so getMessage is forbidden");
             return null;
         }
-
+        // 2.是否可读
         if (!this.runningFlags.isReadable()) {
             log.warn("message store is not readable, so getMessage is forbidden " + this.runningFlags.getFlagBits());
             return null;
@@ -600,12 +604,15 @@ public class DefaultMessageStore implements MessageStore {
         long beginTime = this.getSystemClock().now();
 
         GetMessageStatus status = GetMessageStatus.NO_MESSAGE_IN_QUEUE;
+        // 待查找队列的偏移量
         long nextBeginOffset = offset;
+        // 当前消息队列的最小偏移量
         long minOffset = 0;
+        // 当前消息队列的最大偏移量
         long maxOffset = 0;
 
         GetMessageResult getResult = new GetMessageResult();
-
+        // 当前CommitLog文件的最大偏移量
         final long maxOffsetPy = this.commitLog.getMaxOffset();
 
         ConsumeQueue consumeQueue = findConsumeQueue(topic, queueId);
@@ -614,15 +621,19 @@ public class DefaultMessageStore implements MessageStore {
             maxOffset = consumeQueue.getMaxOffsetInQueue();
 
             if (maxOffset == 0) {
+                // maxOffset==0,表示当前消费队列中没有消息
                 status = GetMessageStatus.NO_MESSAGE_IN_QUEUE;
                 nextBeginOffset = nextOffsetCorrection(offset, 0);
             } else if (offset < minOffset) {
+                // 待拉取消息的偏移量小于队列的最小偏移量
                 status = GetMessageStatus.OFFSET_TOO_SMALL;
                 nextBeginOffset = nextOffsetCorrection(offset, minOffset);
             } else if (offset == maxOffset) {
+                // 待拉取消息的偏移量等于队列的最大偏移量
                 status = GetMessageStatus.OFFSET_OVERFLOW_ONE;
                 nextBeginOffset = nextOffsetCorrection(offset, offset);
             } else if (offset > maxOffset) {
+                // 应该考虑minOffset是否为0
                 status = GetMessageStatus.OFFSET_OVERFLOW_BADLY;
                 if (0 == minOffset) {
                     nextBeginOffset = nextOffsetCorrection(offset, minOffset);
@@ -630,6 +641,7 @@ public class DefaultMessageStore implements MessageStore {
                     nextBeginOffset = nextOffsetCorrection(offset, maxOffset);
                 }
             } else {
+                // minOffset < offset < maxOffset
                 SelectMappedBufferResult bufferConsumeQueue = consumeQueue.getIndexBuffer(offset);
                 if (bufferConsumeQueue != null) {
                     try {
@@ -673,7 +685,8 @@ public class DefaultMessageStore implements MessageStore {
                                     isTagsCodeLegal = false;
                                 }
                             }
-
+                            // 对ConsumeQueue条目进行过滤，如果不匹配则直接跳过这条消息，继续拉取下一条消息
+                            // 如果消息根据ConsumeQueue条目通过过滤就需要从CommitLog文件中加载整个消息体，然后根据属性进行过滤。但是如果是TAG模式，就直接返回true
                             if (messageFilter != null
                                 && !messageFilter.isMatchedByConsumeQueue(isTagsCodeLegal ? tagsCode : null, extRet ? cqExtUnit : null)) {
                                 if (getResult.getBufferTotalSize() == 0) {
@@ -683,6 +696,7 @@ public class DefaultMessageStore implements MessageStore {
                                 continue;
                             }
 
+                            // 从CommitLog文件中获取消息
                             SelectMappedBufferResult selectResult = this.commitLog.getMessage(offsetPy, sizePy);
                             if (null == selectResult) {
                                 if (getResult.getBufferTotalSize() == 0) {
@@ -2104,10 +2118,9 @@ public class DefaultMessageStore implements MessageStore {
         @Override
         public void run() {
             DefaultMessageStore.log.info(this.getServiceName() + " service started");
-            // 1.循环执行，直到标志位为false
+            // 1.判断是否需要拉取消息
             while (!this.isStopped()) {
                 try {
-                    // 2.每秒执行一次
                     Thread.sleep(1);
                     // 3.执行业务逻辑
                     this.doReput();

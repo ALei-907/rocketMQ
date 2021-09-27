@@ -123,8 +123,11 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             ConsumeMessageContext context = buildConsumeMessageContext(namespace, requestHeader, request);
             this.executeConsumeMessageHookAfter(context);
         }
+
+        // 1.获取消费组的订阅配置信息
         SubscriptionGroupConfig subscriptionGroupConfig =
             this.brokerController.getSubscriptionGroupManager().findSubscriptionGroupConfig(requestHeader.getGroup());
+        // *：如果配置信息为空返回配置组信息不存在错误
         if (null == subscriptionGroupConfig) {
             response.setCode(ResponseCode.SUBSCRIPTION_GROUP_NOT_EXIST);
             response.setRemark("subscription group not exist, " + requestHeader.getGroup() + " "
@@ -136,13 +139,14 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             response.setRemark("the broker[" + this.brokerController.getBrokerConfig().getBrokerIP1() + "] sending message is forbidden");
             return CompletableFuture.completedFuture(response);
         }
-
+        // *：如果消费组的重试队列小于1直接返回，表示该消费组不支持重试
         if (subscriptionGroupConfig.getRetryQueueNums() <= 0) {
             response.setCode(ResponseCode.SUCCESS);
             response.setRemark(null);
             return CompletableFuture.completedFuture(response);
         }
 
+        // 2.创建重试主题： "%RETRY%"+GroupName，并从重试队列中随机选择一个队列
         String newTopic = MixAll.getRetryTopic(requestHeader.getGroup());
         int queueIdInt = Math.abs(this.random.nextInt() % 99999999) % subscriptionGroupConfig.getRetryQueueNums();
         int topicSysFlag = 0;
@@ -150,6 +154,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             topicSysFlag = TopicSysFlag.buildSysFlag(false, true);
         }
 
+        // *：并构建TopicConfig主题配置信息
         TopicConfig topicConfig = this.brokerController.getTopicConfigManager().createTopicInSendMessageBackMethod(
             newTopic,
             subscriptionGroupConfig.getRetryQueueNums(),
@@ -165,6 +170,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             response.setRemark(String.format("the topic[%s] sending message is forbidden", newTopic));
             return CompletableFuture.completedFuture(response);
         }
+        // 3.获取根据消息物理偏移量从commitLog文件中获取消息，同时将消息的主题存入属性中
         MessageExt msgExt = this.brokerController.getMessageStore().lookMessageByOffset(requestHeader.getOffset());
         if (null == msgExt) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
@@ -187,7 +193,8 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
                 maxReconsumeTimes = times;
             }
         }
-
+        // 4.设置消息重试次数
+        // *：如果消息已重试次数大于maxReconsumeTimes，再次改变主题为DLQ，该主题的权限为只写，说明消息一旦进入到DLQ队列中，rockeyMq不再进行调度消费，需要人工进行干预了
         if (msgExt.getReconsumeTimes() >= maxReconsumeTimes 
             || delayLevel < 0) {
             newTopic = MixAll.getDLQTopic(requestHeader.getGroup());
@@ -208,6 +215,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             msgExt.setDelayTimeLevel(delayLevel);
         }
 
+        // 根据原先的消息创建一个新的消息对象，重试消息会拥有自己唯一消息ID，并存入CommitLog文件中，并不会更新原来的消息
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
         msgInner.setTopic(newTopic);
         msgInner.setBody(msgExt.getBody());
@@ -227,6 +235,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         MessageAccessor.setOriginMessageId(msgInner, UtilAll.isBlank(originMsgId) ? msgExt.getMsgId() : originMsgId);
         msgInner.setPropertiesString(MessageDecoder.messageProperties2String(msgExt.getProperties()));
 
+        // 将消息存入CommitLog文件中
         CompletableFuture<PutMessageResult> putMessageResult = this.brokerController.getMessageStore().asyncPutMessage(msgInner);
         return putMessageResult.thenApply((r) -> {
             if (r != null) {

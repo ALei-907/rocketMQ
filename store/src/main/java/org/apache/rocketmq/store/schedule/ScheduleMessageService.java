@@ -114,19 +114,23 @@ public class ScheduleMessageService extends ConfigManager {
         if (started.compareAndSet(false, true)) {
             super.load();
             this.timer = new Timer("ScheduleMessageTimerThread", true);
+            // start根据延迟级别创建对应的定时任务，启动定时任务持久化延迟消息队列进度存储
             for (Map.Entry<Integer, Long> entry : this.delayLevelTable.entrySet()) {
                 Integer level = entry.getKey();
                 Long timeDelay = entry.getValue();
+                // 根据延迟级别消费队列的消费进度，如果不存在就使用0
                 Long offset = this.offsetTable.get(level);
                 if (null == offset) {
                     offset = 0L;
                 }
 
                 if (timeDelay != null) {
+                    // 延迟级别与消息消费队列的映射关系为：消息队列ID=延迟级别-1
                     this.timer.schedule(new DeliverDelayedMessageTimerTask(level, offset), FIRST_DELAY_TIME);
                 }
             }
 
+            // 每隔10s持久化一次延迟队列的消息消费进度
             this.timer.scheduleAtFixedRate(new TimerTask() {
 
                 @Override
@@ -161,6 +165,9 @@ public class ScheduleMessageService extends ConfigManager {
         return this.encode(false);
     }
 
+    /**
+     * 消息消费队列消息进度的加载与DelayLevelTable的构造
+     */
     public boolean load() {
         boolean result = super.load();
         result = result && this.parseDelayLevel();
@@ -261,13 +268,16 @@ public class ScheduleMessageService extends ConfigManager {
         }
 
         public void executeOnTimeup() {
+            // 1.根据队列ID与延迟主题查找消息消费队列
             ConsumeQueue cq =
                 ScheduleMessageService.this.defaultMessageStore.findConsumeQueue(TopicValidator.RMQ_SYS_SCHEDULE_TOPIC,
                     delayLevel2QueueId(delayLevel));
 
             long failScheduleOffset = offset;
 
+            // 2.找到了延迟队列
             if (cq != null) {
+                // 从消息消费队列中获取当前队列中所有有效的消息
                 SelectMappedBufferResult bufferCQ = cq.getIndexBuffer(this.offset);
                 if (bufferCQ != null) {
                     try {
@@ -369,7 +379,7 @@ public class ScheduleMessageService extends ConfigManager {
                     }
                 } // end of if (bufferCQ != null)
                 else {
-
+                // 如果找不到，则更新以下延迟队列定时拉取进度并创建定时任务待下一次继续尝试
                     long cqMinOffset = cq.getMinOffsetInQueue();
                     if (offset < cqMinOffset) {
                         failScheduleOffset = cqMinOffset;
@@ -379,6 +389,7 @@ public class ScheduleMessageService extends ConfigManager {
                 }
             } // end of if (cq != null)
 
+            // 3.如果没有找到则根据延迟级别创建下一个调度任务
             ScheduleMessageService.this.timer.schedule(new DeliverDelayedMessageTimerTask(this.delayLevel,
                 failScheduleOffset), DELAY_FOR_A_WHILE);
         }

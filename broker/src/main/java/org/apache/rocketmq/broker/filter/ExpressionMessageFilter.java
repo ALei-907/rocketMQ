@@ -59,17 +59,18 @@ public class ExpressionMessageFilter implements MessageFilter {
 
     @Override
     public boolean isMatchedByConsumeQueue(Long tagsCode, ConsumeQueueExt.CqExtUnit cqExtUnit) {
+        // 1.subscriptionData订阅消息为空，返回true
         if (null == subscriptionData) {
             return true;
         }
-
+        // 2.类过滤模式返回true
         if (subscriptionData.isClassFilterMode()) {
             return true;
         }
 
-        // by tags code.
+        // 3.TAG模式
         if (ExpressionType.isTagType(subscriptionData.getExpressionType())) {
-
+            // Code==null
             if (tagsCode == null) {
                 return true;
             }
@@ -114,6 +115,9 @@ public class ExpressionMessageFilter implements MessageFilter {
         return true;
     }
 
+    /**
+     * 主要针对的是SQL92服务的
+     */
     @Override
     public boolean isMatchedByCommitLog(ByteBuffer msgBuffer, Map<String, String> properties) {
         if (subscriptionData == null) {
