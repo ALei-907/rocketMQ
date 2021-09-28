@@ -956,14 +956,22 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
         }
     }
 
-    public void subscribe(String topic, String fullClassName, String filterClassSource) throws MQClientException {
+    /**
+     * 消费者订阅主题时采用类过滤模式
+     */
+    public void subscribe(String topic,             // 订阅主题
+                          String fullClassName,     // 类过滤全路径名
+                          String filterClassSource  // 类过滤源代码字符串
+    ) throws MQClientException {
         try {
+            // 1.构建订阅信息
             SubscriptionData subscriptionData = FilterAPI.buildSubscriptionData(topic, "*");
             subscriptionData.setSubString(fullClassName);
             subscriptionData.setClassFilterMode(true);
             subscriptionData.setFilterClassSource(filterClassSource);
             this.rebalanceImpl.getSubscriptionInner().put(topic, subscriptionData);
             if (this.mQClientFactory != null) {
+                // 2.定时将消息端订阅信息中的类过滤过滤模式的过滤类源码上传到FilterServer
                 this.mQClientFactory.sendHeartbeatToAllBrokerWithLock();
             }
 

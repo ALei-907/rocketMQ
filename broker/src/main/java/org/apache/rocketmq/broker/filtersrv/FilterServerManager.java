@@ -64,15 +64,23 @@ public class FilterServerManager {
         }, 1000 * 5, 1000 * 30, TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * 为了避免Broker端FilterServer的异常退出导致FilterServer的进程越来越少，所以提供一个自动创建FilterServer进程的机制
+     */
     public void createFilterServer() {
+        // 1.从配置文件中获取FilterServer的配置数量
         int more =
             this.brokerController.getBrokerConfig().getFilterServerNums() - this.filterServerTable.size();
-        String cmd = this.buildStartCommand();
+        String cmd = this.buildStartCommand(); //   构建启动命令
+        // 2.如果少于配置数量就进行创建
         for (int i = 0; i < more; i++) {
             FilterServerUtil.callShell(cmd, log);
         }
     }
 
+    /**
+     * 构建启动命令
+     */
     private String buildStartCommand() {
         String config = "";
         if (BrokerStartup.configFile != null) {
@@ -98,11 +106,17 @@ public class FilterServerManager {
         this.scheduledExecutorService.shutdown();
     }
 
+    /**
+     * 注册FilterServerInfo
+     */
     public void registerFilterServer(final Channel channel, final String filterServerAddr) {
+        // 1.以Channel为key获取FilterServerInfo
         FilterServerInfo filterServerInfo = this.filterServerTable.get(channel);
+        // 2.如果存在,就更新当前时间
         if (filterServerInfo != null) {
             filterServerInfo.setLastUpdateTimestamp(System.currentTimeMillis());
         } else {
+            // 3.如果不存在，就进行新建
             filterServerInfo = new FilterServerInfo();
             filterServerInfo.setFilterServerAddr(filterServerAddr);
             filterServerInfo.setLastUpdateTimestamp(System.currentTimeMillis());
@@ -145,7 +159,9 @@ public class FilterServerManager {
     }
 
     static class FilterServerInfo {
+        // filterServer所在的主机地址
         private String filterServerAddr;
+        // 上次更新时间戳
         private long lastUpdateTimestamp;
 
         public String getFilterServerAddr() {
