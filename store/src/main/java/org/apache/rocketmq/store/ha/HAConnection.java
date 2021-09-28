@@ -28,12 +28,24 @@ import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 import org.apache.rocketmq.store.SelectMappedBufferResult;
 
+/**
+ * HA Master服务端HA连接对象的封装，与Broker从服务器的网络读写实现类
+ */
 public class HAConnection {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
+    // HA Service对象
     private final HAService haService;
+
+    // 网络通道
     private final SocketChannel socketChannel;
+
+    // 客户端连接地址
     private final String clientAddr;
+
+    // HA Master 服务端向从服务器写数据服务类
     private WriteSocketService writeSocketService;
+
+    // HA Master 服务端从从服务器读数据服务类
     private ReadSocketService readSocketService;
 
     private volatile long slaveRequestOffset = -1;
@@ -79,11 +91,22 @@ public class HAConnection {
     }
 
     class ReadSocketService extends ServiceThread {
+        // 网络读缓冲区大小，默认1M
         private static final int READ_MAX_BUFFER_SIZE = 1024 * 1024;
+
+        // NIO网络事件选择器
         private final Selector selector;
+
+        // 网络连接通道
         private final SocketChannel socketChannel;
+
+        // 网络读写缓冲区，默认1M
         private final ByteBuffer byteBufferRead = ByteBuffer.allocate(READ_MAX_BUFFER_SIZE);
+
+        // byteBuffer当前处理指针
         private int processPosition = 0;
+
+        // 上次读取数据的时间戳
         private volatile long lastReadTimestamp = System.currentTimeMillis();
 
         public ReadSocketService(final SocketChannel socketChannel) throws IOException {
@@ -98,6 +121,7 @@ public class HAConnection {
             HAConnection.log.info(this.getServiceName() + " service started");
 
             while (!this.isStopped()) {
+                // 每秒一次处理读就绪事件
                 try {
                     this.selector.select(1000);
                     boolean ok = this.processReadEvent();
@@ -147,15 +171,16 @@ public class HAConnection {
 
         private boolean processReadEvent() {
             int readSizeZeroTimes = 0;
-
+            // 1.如果ByteBufferRead没有剩余空间，说明position==limit==capacity，调用flip(),效果等同于,position=0，limit=capacity
             if (!this.byteBufferRead.hasRemaining()) {
                 this.byteBufferRead.flip();
                 this.processPosition = 0;
             }
-
+            // 2.处理网络读请求
             while (this.byteBufferRead.hasRemaining()) {
                 try {
                     int readSize = this.socketChannel.read(this.byteBufferRead);
+                    // 如果读取的字节大于0并且本次读取到的内容大于等于8，表明收到了从服务器一条拉取消息的请求
                     if (readSize > 0) {
                         readSizeZeroTimes = 0;
                         this.lastReadTimestamp = HAConnection.this.haService.getDefaultMessageStore().getSystemClock().now();
@@ -169,7 +194,7 @@ public class HAConnection {
                                 HAConnection.this.slaveRequestOffset = readOffset;
                                 log.info("slave[" + HAConnection.this.clientAddr + "] request offset " + readOffset);
                             }
-
+                            // 唤醒由于HA而阻塞的消息发送者线程
                             HAConnection.this.haService.notifyTransferSome(HAConnection.this.slaveAckOffset);
                         }
                     } else if (readSize == 0) {
@@ -191,14 +216,23 @@ public class HAConnection {
     }
 
     class WriteSocketService extends ServiceThread {
+        // NIO网络事件选择器
         private final Selector selector;
+        // 网络SocketChannel
         private final SocketChannel socketChannel;
 
+        // 消息头长度，消息物理偏移量+消息长度
         private final int headerSize = 8 + 4;
         private final ByteBuffer byteBufferHeader = ByteBuffer.allocate(headerSize);
+
+        // 下一次物理传输的物理偏移量
         private long nextTransferFromWhere = -1;
         private SelectMappedBufferResult selectMappedBufferResult;
+
+        // 上一次数据是否传输完毕
         private boolean lastWriteOver = true;
+
+        // 上一次写入的时间戳
         private long lastWriteTimestamp = System.currentTimeMillis();
 
         public WriteSocketService(final SocketChannel socketChannel) throws IOException {
@@ -215,7 +249,7 @@ public class HAConnection {
             while (!this.isStopped()) {
                 try {
                     this.selector.select(1000);
-
+                    //
                     if (-1 == HAConnection.this.slaveRequestOffset) {
                         Thread.sleep(10);
                         continue;

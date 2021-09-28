@@ -41,6 +41,9 @@ import org.apache.rocketmq.store.DefaultMessageStore;
 import org.apache.rocketmq.store.PutMessageSpinLock;
 import org.apache.rocketmq.store.PutMessageStatus;
 
+/**
+ * 主从同步核心实现类
+ */
 public class HAService {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
@@ -48,6 +51,7 @@ public class HAService {
 
     private final List<HAConnection> connectionList = new LinkedList<>();
 
+    // HA Master端监听客户端连接实现类
     private final AcceptSocketService acceptSocketService;
 
     private final DefaultMessageStore defaultMessageStore;
@@ -55,8 +59,10 @@ public class HAService {
     private final WaitNotifyObject waitNotifyObject = new WaitNotifyObject();
     private final AtomicLong push2SlaveMaxOffset = new AtomicLong(0);
 
+    // 主从同步通知实现类
     private final GroupTransferService groupTransferService;
 
+    // HA Client 端 实现类
     private final HAClient haClient;
 
     public HAService(final DefaultMessageStore defaultMessageStore) throws IOException {
@@ -107,9 +113,24 @@ public class HAService {
     // }
 
     public void start() throws Exception {
+
+        // 1.主服务器启动，并在特定端口上监听从服务器的连接
         this.acceptSocketService.beginAccept();
+        // 2.从服务器主动连接主服务器，主服务器接收客户端的连接，并建立相关TCP连接
         this.acceptSocketService.start();
+        // 3.从服务器主动向主服务器发送待拉取消息偏移量，主服务器解析请求并返回消息给从服务器
+        /**
+         * 以下分析啊同步主从模式
+         *      1.消息发送者将消息刷写到磁盘之后，需要继续等待新数据被传输到从服务器，从服务器的复制是在另外一个HAConnection中去拉取
+         *      2.所以消息发送者在这里需要等待数据传输的结果
+         *
+         *      核心实现:{@link GroupTransferService#run()}
+         */
         this.groupTransferService.start();
+        // 4.从服务器保存消息并继续发送新的消息同步请求
+        /**
+         * 是主从同步Slave端的核心实现类
+         */
         this.haClient.start();
     }
 
@@ -158,8 +179,11 @@ public class HAService {
      * Listens to slave connections to create {@link HAConnection}.
      */
     class AcceptSocketService extends ServiceThread {
+        // Broker服务监听套接字(本地IP+端口)
         private final SocketAddress socketAddressListen;
+        // 服务端Socket通道,基于NIO
         private ServerSocketChannel serverSocketChannel;
+        // 事件选择器,基于NIO
         private Selector selector;
 
         public AcceptSocketService(final int port) {
@@ -172,11 +196,17 @@ public class HAService {
          * @throws Exception If fails.
          */
         public void beginAccept() throws Exception {
+            // 创建ServerSocketChannel
             this.serverSocketChannel = ServerSocketChannel.open();
+            // 创建Selector
             this.selector = RemotingUtil.openSelector();
+            // 设置TCP ReuseAddress
             this.serverSocketChannel.socket().setReuseAddress(true);
+            // 绑定监听端口
             this.serverSocketChannel.socket().bind(this.socketAddressListen);
+            // 设置为非阻塞模式
             this.serverSocketChannel.configureBlocking(false);
+            // 注册监听事件(连接事件)
             this.serverSocketChannel.register(this.selector, SelectionKey.OP_ACCEPT);
         }
 
@@ -195,7 +225,7 @@ public class HAService {
         }
 
         /**
-         * {@inheritDoc}
+         * 标准NIO连接处理事件
          */
         @Override
         public void run() {
@@ -218,6 +248,7 @@ public class HAService {
                                     try {
                                         HAConnection conn = new HAConnection(HAService.this, sc);
                                         conn.start();
+                                        // 添加连接数据
                                         HAService.this.addConnection(conn);
                                     } catch (Exception e) {
                                         log.error("new HAConnection exception", e);
@@ -283,12 +314,23 @@ public class HAService {
             }
         }
 
+        /**
+         * GroupTransferService的职责是:
+         *          当主从同步复制结束后通知,由于等待HA同步结果而阻塞的消息发送者线程
+         *
+         * 判断的主要依据:
+         *          Slave中已成功复制的最大偏移量 是否 大于等于消息生产者发送消息后,消息服务器端返回下一条消息的起始偏移量
+         *          Yes:同步成功,唤醒消息发送线程,否则等待1s再次判断，每一个任务在一批任务中循环判断5次
+         *          No :
+         */
         private void doWaitTransfer() {
             if (!this.requestsRead.isEmpty()) {
                 for (CommitLog.GroupCommitRequest req : this.requestsRead) {
+                    //  Slave中已成功复制的最大偏移量 是否 大于等于消息生产者发送消息后,消息服务器端返回下一条消息的起始偏移量
                     boolean transferOK = HAService.this.push2SlaveMaxOffset.get() >= req.getNextOffset();
                     long waitUntilWhen = HAService.this.defaultMessageStore.getSystemClock().now()
                             + HAService.this.defaultMessageStore.getMessageStoreConfig().getSyncFlushTimeout();
+                    //  同步成功,唤醒消息发送线程,否则等待1s再次判断，默认在时间配置内
                     while (!transferOK && HAService.this.defaultMessageStore.getSystemClock().now() < waitUntilWhen) {
                         this.notifyTransferObject.waitForRunning(1000);
                         transferOK = HAService.this.push2SlaveMaxOffset.get() >= req.getNextOffset();
@@ -311,6 +353,7 @@ public class HAService {
             while (!this.isStopped()) {
                 try {
                     this.waitForRunning(10);
+                    // 核心实现
                     this.doWaitTransfer();
                 } catch (Exception e) {
                     log.warn(this.getServiceName() + " service has exception. ", e);
@@ -333,15 +376,31 @@ public class HAService {
 
     class HAClient extends ServiceThread {
         private static final int READ_MAX_BUFFER_SIZE = 1024 * 1024 * 4;
+        // Master地址
         private final AtomicReference<String> masterAddress = new AtomicReference<>();
+
+        // Slave向Master发起主从同步的拉取偏移量
         private final ByteBuffer reportOffset = ByteBuffer.allocate(8);
+
+        // 网络传输通道
         private SocketChannel socketChannel;
+
+        // NIO事件选择器
         private Selector selector;
+
+        // 上一次写入时间戳
         private long lastWriteTimestamp = System.currentTimeMillis();
 
+        // 反馈Slave当前的复制进度,commitLog文件最大偏移量
         private long currentReportedOffset = 0;
+
+        // 本次已处理读缓冲区的指针
         private int dispatchPosition = 0;
+
+        // 读缓冲区，大小4M
         private ByteBuffer byteBufferRead = ByteBuffer.allocate(READ_MAX_BUFFER_SIZE);
+
+        // 读缓冲区备份,与byteBufferRead进行交换
         private ByteBuffer byteBufferBackup = ByteBuffer.allocate(READ_MAX_BUFFER_SIZE);
 
         public HAClient() throws IOException {
@@ -365,6 +424,9 @@ public class HAService {
             return needHeart;
         }
 
+        /**
+         * 判断是否需要向Master反馈当前待拉取偏移量
+         */
         private boolean reportSlaveMaxOffset(final long maxOffset) {
             this.reportOffset.position(0);
             this.reportOffset.limit(8);
@@ -409,6 +471,10 @@ public class HAService {
             this.byteBufferBackup = tmp;
         }
 
+        /**
+         * 处理服务器端返回的消息
+         * @return
+         */
         private boolean processReadEvent() {
             int readSizeZeroTimes = 0;
             while (this.byteBufferRead.hasRemaining()) {
@@ -499,11 +565,15 @@ public class HAService {
             return result;
         }
 
+        /**
+         * 连接Master-Broker
+         */
         private boolean connectMaster() throws ClosedChannelException {
+            // 如果SocketChannel为空,则尝试进行连接Master
             if (null == socketChannel) {
                 String addr = this.masterAddress.get();
                 if (addr != null) {
-
+                    // 建立连接,注册事件
                     SocketAddress socketAddress = RemotingUtil.string2SocketAddress(addr);
                     if (socketAddress != null) {
                         this.socketChannel = RemotingUtil.connect(socketAddress);
@@ -512,9 +582,9 @@ public class HAService {
                         }
                     }
                 }
-
+                // 初始化currentReportedOffset为commitLog文件的最大偏移量
                 this.currentReportedOffset = HAService.this.defaultMessageStore.getMaxPhyOffset();
-
+                // 上次写入时间为当前时间戳
                 this.lastWriteTimestamp = System.currentTimeMillis();
             }
 

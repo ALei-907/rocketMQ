@@ -63,6 +63,13 @@ public abstract class ServiceThread implements Runnable {
          *
          * 消息队列重新分布:
          * {@link org.apache.rocketmq.client.impl.consumer.RebalanceService#run()}
+         *
+         * 【--------HA--------】
+         * 处理从服务器与主服务器的连接
+         * {@linkl org.apache.rocketmq.store.ha.HAService.AcceptSocketService#run()}
+         *
+         * 消息同步
+         * {@link org.apache.rocketmq.store.ha.HAService.GroupTransferService#run()}
          */
         this.thread.start();
     }
