@@ -193,6 +193,13 @@ public class TransactionalMessageBridge {
     }
 
     public PutMessageResult putHalfMessage(MessageExtBrokerInner messageInner) {
+        /**
+         * 1.事务消息处理流程
+         *  *:备份消息的原主题与原消息消费队列
+         *  *:然后将主题变更为RMQ_SYS——TRANS_HALF_TOPIC，消费队列变更为0
+         *  *:然后按照普通消息存储在commitLog文件进而转发到上述主题对应的消息消费队列
+         *  *:也就是说，事务消息在未提交之前并不会存入消息原有主题，自然也不会被消费者消费
+         */
         return store.putMessage(parseHalfMessageInner(messageInner));
     }
 

@@ -127,6 +127,7 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
     public void check(long transactionTimeout, int transactionCheckMax,
         AbstractTransactionalMessageCheckListener listener) {
         try {
+            // 1.获取RMQ_SYS_TRANS_HALF_TOPIC主题下所有消息队列，然后依次处理
             String topic = TopicValidator.RMQ_SYS_TRANS_HALF_TOPIC;
             Set<MessageQueue> msgQueues = transactionalMessageBridge.fetchMessageQueues(topic);
             if (msgQueues == null || msgQueues.size() == 0) {
@@ -135,6 +136,7 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
             }
             log.debug("Check topic={}, queues={}", topic, msgQueues);
             for (MessageQueue messageQueue : msgQueues) {
+                // 2.根据事务消息消费队列获取与之对于的消息队列，其实就是获取已处理消息的消息消费日队列，其主题RMQ_SYS_TRANS_OP_HALF_TOPIC
                 long startTime = System.currentTimeMillis();
                 MessageQueue opQueue = getOpQueue(messageQueue);
                 long halfOffset = transactionalMessageBridge.fetchConsumeOffset(messageQueue);
@@ -146,6 +148,7 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                     continue;
                 }
 
+                // 3.根据当前的处理进度依次从已处理队列拉取32条消息，方便判断当前处理的消息是否已经处理过了。如果已经处理过了就无需进行处理
                 List<Long> doneOpOffset = new ArrayList<>();
                 HashMap<Long, Long> removeMap = new HashMap<>();
                 PullResult pullResult = fillOpRemoveMap(removeMap, opQueue, opOffset, halfOffset, doneOpOffset);

@@ -827,7 +827,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                     msgBodyCompressed = true;
                 }
 
-                // 判断是否为事物消息
+                // 判断是否为事物消息，如果消息为prepare类型，则设置消息标准为prepare类型，方便消息服务器正确识别事务类型的消息
                 final String tranMsg = msg.getProperty(MessageConst.PROPERTY_TRANSACTION_PREPARED);
                 if (tranMsg != null && Boolean.parseBoolean(tranMsg)) {
                     sysFlag |= MessageSysFlag.TRANSACTION_PREPARED_TYPE;
@@ -1321,6 +1321,9 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         }
     }
 
+    /**
+     * 事物消息实际调用入口
+     */
     public TransactionSendResult sendMessageInTransaction(final Message msg,
         final LocalTransactionExecuter localTransactionExecuter, final Object arg)
         throws MQClientException {
@@ -1336,19 +1339,25 @@ public class DefaultMQProducerImpl implements MQProducerInner {
 
         Validators.checkMessage(msg, this.defaultMQProducer);
 
+        // 1.为消息添加属性，TRAN_MSG和PGROUP
+        //   分别表示消息为prepare消息,消息所属消息生产者组
         SendResult sendResult = null;
         MessageAccessor.putProperty(msg, MessageConst.PROPERTY_TRANSACTION_PREPARED, "true");
         MessageAccessor.putProperty(msg, MessageConst.PROPERTY_PRODUCER_GROUP, this.defaultMQProducer.getProducerGroup());
         try {
+            // 发送消息
             sendResult = this.send(msg);
         } catch (Exception e) {
             throw new MQClientException("send message Exception", e);
         }
 
+        // 2.根据消息发送结果执行对应的操作
         LocalTransactionState localTransactionState = LocalTransactionState.UNKNOW;
         Throwable localException = null;
         switch (sendResult.getSendStatus()) {
             case SEND_OK: {
+                // *: 如果消息发送成功，则执行localTransactionExecuter.executeLocalTransactionBranch(msg, arg);
+                //    该方法的职责: 记录事物消息的本地事物状态，例如可以通过将消息唯一ID存储在数据中，并且该方法与业务代码处于同一个事务，与业务事务要么一起成功，要么一起失败
                 try {
                     if (sendResult.getTransactionId() != null) {
                         msg.putUserProperty("__transactionId__", sendResult.getTransactionId());
@@ -1378,6 +1387,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                 }
             }
             break;
+            // *: 以下，如果消息发送失败，则设置本次事务状态为LocalTransactionState.ROLLBACK_MESSAGE
             case FLUSH_DISK_TIMEOUT:
             case FLUSH_SLAVE_TIMEOUT:
             case SLAVE_NOT_AVAILABLE:
@@ -1388,6 +1398,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         }
 
         try {
+            // *: 结束事务。根据第二步返回的事务状态执行提交,回滚或暂时不处理业务
             this.endTransaction(msg, sendResult, localTransactionState, localException);
         } catch (Exception e) {
             log.warn("local transaction execute " + localTransactionState + ", but end broker transaction failed", e);
@@ -1423,6 +1434,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         } else {
             id = MessageDecoder.decodeMessageId(sendResult.getMsgId());
         }
+        // 根据消息所属的消息队列获取Broker的IP和端口信息，然后发送结束事务命令，其关键就是根据本地执行事务的状态分别发送提交,回滚,后UNKONW的命令
         String transactionId = sendResult.getTransactionId();
         final String brokerAddr = this.mQClientFactory.findBrokerAddressInPublish(sendResult.getMessageQueue().getBrokerName());
         EndTransactionRequestHeader requestHeader = new EndTransactionRequestHeader();
@@ -1430,6 +1442,16 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         requestHeader.setCommitLogOffset(id.getOffset());
         switch (localTransactionState) {
             case COMMIT_MESSAGE:
+                // Broker再接收第二阶段的提交命令之后
+                /**
+                 * 1.首先从结束事务请求命令中获取消息的物理偏移量
+                 * 2.然后恢复消息的主题，消费队列，构建新的消息对象
+                 * 3.然后将消息再次存储在CommitLog文件中,此时的消息主题则为业务方发送的消息，将转发到对应的消息消费队列，供消息消费者消费
+                 * 4.消息存储后，删除prepare消息，其实现方法不是真的删除，而是将prepare消息存储到RMQ_SYS_TRANS_OP_HALF_TOPIC主题中,
+                 *   表示事务消息已经处理过来
+                 *
+                 * ****:回滚与提交的差别就是无需将消息恢复到原来的注意
+                 */
                 requestHeader.setCommitOrRollback(MessageSysFlag.TRANSACTION_COMMIT_TYPE);
                 break;
             case ROLLBACK_MESSAGE:

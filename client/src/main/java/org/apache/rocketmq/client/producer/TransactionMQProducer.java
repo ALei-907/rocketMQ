@@ -28,8 +28,10 @@ public class TransactionMQProducer extends DefaultMQProducer {
     private int checkThreadPoolMaxSize = 1;
     private int checkRequestHoldMax = 2000;
 
+    // 事物状态回查异步执行线程池
     private ExecutorService executorService;
 
+    // 事物监听器，主要定义实现本地事物状态执行，本地事物状态回查两个接口
     private TransactionListener transactionListener;
 
     public TransactionMQProducer() {
@@ -83,14 +85,20 @@ public class TransactionMQProducer extends DefaultMQProducer {
         return this.defaultMQProducerImpl.sendMessageInTransaction(msg, tranExecuter, arg);
     }
 
+    /**
+     * 发送事物消息
+     *
+     */
     @Override
     public TransactionSendResult sendMessageInTransaction(final Message msg,
         final Object arg) throws MQClientException {
+        // 1.判断是否存在事件️监听器
         if (null == this.transactionListener) {
             throw new MQClientException("TransactionListener is null", null);
         }
 
         msg.setTopic(NamespaceUtil.wrapNamespace(this.getNamespace(), msg.getTopic()));
+        // 2.调用DefaultMQProducerImpl#sendMessageInTransaction()
         return this.defaultMQProducerImpl.sendMessageInTransaction(msg, null, arg);
     }
 
